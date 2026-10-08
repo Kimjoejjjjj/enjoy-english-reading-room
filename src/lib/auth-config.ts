@@ -46,13 +46,18 @@ export function isLoginEmailAllowed(email: string) {
   return getAllowedLoginEmails().has(normalizeLoginEmail(email));
 }
 
-export function assertEmailProviderConfigured() {
+export function getEmailDeliveryConfig() {
   const apiKey = process.env.RESEND_API_KEY?.trim() || "";
   const from = process.env.RESEND_FROM_EMAIL?.trim() || "";
-  if (!apiKey || !isValidLoginEmail(from)) {
-    throw new Error("RESEND_API_KEY and a valid RESEND_FROM_EMAIL are required");
-  }
-  return { apiKey, from };
+  if (apiKey && isValidLoginEmail(from)) return { mode: "resend" as const, apiKey, from };
+  if (process.env.NODE_ENV !== "production" && !apiKey && !from) return { mode: "console" as const };
+  throw new Error("RESEND_API_KEY and a valid RESEND_FROM_EMAIL must be configured together");
+}
+
+export function assertEmailProviderConfigured() {
+  const config = getEmailDeliveryConfig();
+  if (config.mode !== "resend") throw new Error("RESEND_API_KEY and a valid RESEND_FROM_EMAIL are required in production");
+  return config;
 }
 
 function trustedProxyHops() {

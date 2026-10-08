@@ -73,7 +73,7 @@ Enjoy English Coach 是一个面向中文母语成人学习者的英语精读教
 ### 邀请制访问与私有存储
 
 - 登录邮箱由 `LOGIN_ALLOWED_EMAILS` 白名单控制。
-- 登录验证码通过 Resend 发送，验证码只以摘要形式保存。
+- 本地开发时验证码输出到启动终端；生产环境通过 Resend 发送。验证码在数据库中只保存摘要。
 - 登录状态使用 HttpOnly Cookie；修改数据的接口执行同源检查。
 - 新导入的书籍和封面保存在非公开的数据目录，并按账号校验访问权限。
 
@@ -107,7 +107,8 @@ Enjoy English Coach 是一个面向中文母语成人学习者的英语精读教
 
 - Node.js 20 或更高版本
 - npm
-- 一个 Resend 账号和已验证的发件地址（登录验证码需要）
+
+本地体验不需要 Resend 账号。只有正式部署并发送真实邮件时，才需要 Resend API Key 和已验证的自有域名。
 
 ### 1. 克隆与安装
 
@@ -119,51 +120,41 @@ npm ci
 
 项目会从仓库内固定版本的 Open English WordNet 数据包生成本地词典索引，不需要在安装时下载词典。
 
-### 2. 配置本地环境
+### 2. 一键配置本地环境
 
-复制 `.env.example` 为 `.env.local`：
-
-```powershell
-Copy-Item .env.example .env.local
-```
-
-macOS 或 Linux：
+运行以下命令，它会创建 Git 忽略的 `.env.local`、生成随机登录密钥，并初始化本地数据库：
 
 ```bash
-cp .env.example .env.local
+npm run setup:local
 ```
 
-至少填写以下值：
+脚本不会覆盖已有的 `.env.local`。默认本地登录邮箱是 `reader@example.local`。
 
-```env
-DATABASE_URL="file:./dev.db"
-JWT_SECRET="生成一个至少 32 字符的随机值"
-OTP_HASH_SECRET="生成另一个至少 32 字符的随机值"
-LOGIN_ALLOWED_EMAILS="your-email@example.com"
-RESEND_API_KEY="你的 Resend API Key"
-RESEND_FROM_EMAIL="你在 Resend 验证过的发件地址"
-TRUST_PROXY_HOPS="0"
-APP_DATA_DIR=""
-AI_QUOTA_ENABLED="false"
-```
-
-可以运行下面的命令两次，分别生成 `JWT_SECRET` 和 `OTP_HASH_SECRET`：
+### 3. 启动并登录
 
 ```bash
-node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
-```
-
-当前版本没有绕过验证码的开发登录入口。未配置 Resend 时可以安装和构建项目，但无法完成登录。不要把 `.env.local` 或真实密钥提交到仓库。
-
-### 3. 初始化与启动
-
-```bash
-npx prisma generate
-npx prisma db push
 npm run dev
 ```
 
-打开 `http://localhost:3000`。
+打开 `http://localhost:3000`，输入 `reader@example.local` 获取验证码。验证码会以如下格式显示在运行 `npm run dev` 的终端中：
+
+```text
+[local-login] Verification code for reader@example.local: 123456
+```
+
+复制该六位验证码即可登录。60 秒倒计时只是重新发送的冷却时间；验证码服务端有效期仍为 10 分钟。
+
+### 正式邮件部署
+
+生产环境仍是邀请制，并且不会启用终端验证码。请在服务器环境变量中配置：
+
+```env
+LOGIN_ALLOWED_EMAILS="获准登录的邮箱，多个邮箱用逗号分隔"
+RESEND_API_KEY="Resend API Key"
+RESEND_FROM_EMAIL="login@你已在 Resend 验证的自有域名"
+```
+
+生产部署还必须配置长随机 `JWT_SECRET`、`OTP_HASH_SECRET`、持久化 `APP_DATA_DIR` 和正确的 `TRUST_PROXY_HOPS`。详细步骤见 [`docs/vps-invitation-beta.md`](docs/vps-invitation-beta.md)。不要提交 `.env.local` 或任何真实密钥。
 
 ### 可选 AI 配置
 

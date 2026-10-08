@@ -16,6 +16,7 @@ export default function LoginPage() {
   const [step, setStep] = useState<"input" | "verify">("input");
   const [sending, setSending] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [localDelivery, setLocalDelivery] = useState(false);
   const { login, isLoading, error } = useAuth();
   const { locale, setLocale, t } = useLocale();
 
@@ -41,6 +42,7 @@ export default function LoginPage() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error || t("common.error"));
       setStep("verify");
+      setLocalDelivery(data.delivery === "console");
       setResendSeconds(60);
     } catch (cause) {
       setLocalError(messageFrom(cause, t("common.error")));
@@ -120,7 +122,7 @@ export default function LoginPage() {
                 <div>
                   <label htmlFor="code" className="mb-2 block text-xs font-semibold uppercase tracking-wider text-[var(--ink-soft)]">{t("login.code")}</label>
                   <input id="code" inputMode="numeric" placeholder={t("login.codePlaceholder")} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} maxLength={6} className="h-12 w-full rounded-xl border border-[var(--shelf-line)] bg-white/60 px-4 text-center font-mono text-lg tracking-[0.45em] outline-none focus:border-[var(--green)] focus:ring-2 focus:ring-[var(--green)]/10" />
-                  <div className="mt-2 flex items-center justify-between text-xs text-[var(--ink-soft)]"><span>{locale === "zh-CN" ? "验证码 10 分钟内有效" : "The code expires in 10 minutes"}</span><button type="button" disabled={sending || resendSeconds > 0} onClick={handleSendCode} className="font-semibold text-[var(--green)] disabled:opacity-45">{resendSeconds > 0 ? `${resendSeconds}s` : locale === "zh-CN" ? "重新发送" : "Resend"}</button></div>
+                  <div className="mt-2 flex justify-end text-xs text-[var(--ink-soft)]"><button type="button" disabled={sending || resendSeconds > 0} onClick={handleSendCode} className="font-semibold text-[var(--green)] disabled:opacity-45">{resendSeconds > 0 ? `${resendSeconds}s` : locale === "zh-CN" ? "重新发送" : "Resend"}</button></div>
                   <button type="button" onClick={handleLogin} disabled={isLoading || code.length !== 6} className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[var(--ink)] text-sm font-semibold text-[var(--paper)] transition hover:bg-[var(--green)] disabled:opacity-45">
                     {isLoading ? t("login.entering") : t("login.enter")}
                     {!isLoading && <ArrowRight size={16} />}
@@ -129,6 +131,7 @@ export default function LoginPage() {
               )}
 
               {(localError || error) && <p role="alert" className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{localError || error}</p>}
+              {localDelivery && !localError && !error && <p className="rounded-xl bg-emerald-50 px-4 py-3 text-sm text-emerald-800">{locale === "zh-CN" ? "本地模式：验证码已输出到启动终端。" : "Local mode: the verification code is printed in the terminal."}</p>}
             </div>
 
             <div className="mt-8 flex items-center gap-2 border-t border-[var(--shelf-line)]/70 pt-5 text-xs text-[var(--ink-soft)]">

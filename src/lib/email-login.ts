@@ -1,7 +1,7 @@
 import { createHmac, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/db";
-import { assertEmailProviderConfigured, getOtpHashSecret, hashClientIp, isLoginEmailAllowed, normalizeLoginEmail } from "@/lib/auth-config";
+import { getEmailDeliveryConfig, getOtpHashSecret, hashClientIp, isLoginEmailAllowed, normalizeLoginEmail } from "@/lib/auth-config";
 
 const CODE_TTL_MS = 10 * 60_000;
 const EMAIL_COOLDOWN_MS = 60_000;
@@ -32,13 +32,17 @@ function hashesMatch(left: string, right: string) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-async function sendWithResend(email: string, code: string) {
-  const { apiKey, from } = assertEmailProviderConfigured();
+async function sendLoginCode(email: string, code: string) {
+  const delivery = getEmailDeliveryConfig();
+  if (delivery.mode === "console") {
+    console.info(`[local-login] Verification code for ${email}: ${code}`);
+    return;
+  }
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: { Authorization: `Bearer ${delivery.apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      from,
+      from: delivery.from,
       to: [email],
       subject: "Enjoy English 登录验证码",
       text: `你的登录验证码是 ${code}。验证码将在 10 分钟后失效，请勿转发给他人。`,
@@ -50,7 +54,7 @@ async function sendWithResend(email: string, code: string) {
 
 export type SendCodeResult = "generic" | "cooldown" | "limited" | "provider-unavailable";
 
-export async function issueLoginCode(req: NextRequest, rawEmail: string, now = new Date(), sender = sendWithResend): Promise<SendCodeResult> {
+export async function issueLoginCode(req: NextRequest, rawEmail: string, now = new Date(), sender = sendLoginCode): Promise<SendCodeResult> {
   const email = normalizeLoginEmail(rawEmail);
   if (!isLoginEmailAllowed(email)) return "generic";
   const requestIpHash = hashClientIp(req);

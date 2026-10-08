@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Keep a fresh clone clean after `next dev`; this public repo does not ship
+  // project-specific AI-agent instruction files.
+  agentRules: false,
   // pdf-parse resolves pdf.js worker files at runtime. Keeping it external prevents
   // Turbopack from moving the worker away from the package's expected location.
   serverExternalPackages: ["pdf-parse", "pdfjs-dist"],

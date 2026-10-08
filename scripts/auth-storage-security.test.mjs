@@ -52,7 +52,7 @@ assert.equal(require("@/lib/db").prisma, prisma);
 const { NextRequest } = require("next/server");
 const { issueLoginCode, consumeLoginCode } = require("@/lib/email-login");
 const { signToken } = require("@/lib/auth");
-const { getJwtSecret } = require("@/lib/auth-config");
+const { getEmailDeliveryConfig, getJwtSecret } = require("@/lib/auth-config");
 const { assertProductionRuntimeConfiguration } = require("@/lib/runtime-config");
 const fileRoute = require("@/app/api/books/[id]/file/route");
 const bookRoute = require("@/app/api/books/[id]/route");
@@ -90,6 +90,32 @@ test("production rejects default secrets and non-persistent database paths", () 
     assert.throws(() => assertProductionRuntimeConfiguration(), /inside APP_DATA_DIR/);
     process.env.DATABASE_URL = `file:${path.join(appData, "enjoy.db").replaceAll("\\", "/")}`;
     assert.doesNotThrow(() => assertProductionRuntimeConfiguration());
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test("console delivery is development-only and partial Resend configuration fails", () => {
+  const saved = Object.fromEntries(["NODE_ENV", "RESEND_API_KEY", "RESEND_FROM_EMAIL"].map((key) => [key, process.env[key]]));
+  try {
+    process.env.NODE_ENV = "development";
+    delete process.env.RESEND_API_KEY;
+    delete process.env.RESEND_FROM_EMAIL;
+    assert.deepEqual(getEmailDeliveryConfig(), { mode: "console" });
+
+    process.env.RESEND_API_KEY = "synthetic-resend-key";
+    assert.throws(() => getEmailDeliveryConfig(), /configured together/);
+
+    process.env.RESEND_FROM_EMAIL = "login@example.invalid";
+    assert.equal(getEmailDeliveryConfig().mode, "resend");
+
+    process.env.NODE_ENV = "production";
+    delete process.env.RESEND_API_KEY;
+    delete process.env.RESEND_FROM_EMAIL;
+    assert.throws(() => getEmailDeliveryConfig(), /configured together/);
   } finally {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];

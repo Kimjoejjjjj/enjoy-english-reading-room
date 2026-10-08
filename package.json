@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dictionary:prepare": "node scripts/build-oewn-index.mjs",
+    "setup:local": "node scripts/setup-local.mjs && prisma generate && prisma db push",
     "predev": "npm run dictionary:prepare",
     "dev": "next dev",
     "prebuild": "npm run dictionary:prepare",
