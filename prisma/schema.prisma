@@ -1,0 +1,653 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id                String             @id @default(cuid())
+  email             String             @unique
+  name              String?
+  avatarUrl         String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  profile           UserProfile?
+  mediaFiles        MediaFile[]
+  vocabulary        Vocabulary[]
+  chatMessages      ChatMessage[]
+  contents          Content[]
+  readingProgresses ReadingProgress[]
+  userVocabulary    UserVocabulary[]
+  highlights        Highlight[]
+  learningEvents    LearningEvent[]
+  aiResults         AiResultCache[]
+  aiUsage           AiUsageLog[]
+  aiDailyQuotas     AiDailyQuota[]
+  learningPlans     LearningPlan[]
+  sectionProgresses SectionProgress[]
+  highlightLabels   HighlightLabel[]
+  readingSessions   ReadingSession[]
+  readingLease      ReadingLease?
+  readingTimeDeltas ReadingTimeDelta[]
+  importOperations  ImportOperation[]
+  reparseBatches    ReparseBatch[]
+  aiCredential      UserAiCredential?
+
+  @@map("users")
+}
+
+model EmailLoginCode {
+  id            String    @id
+  email         String
+  codeHash      String
+  requestIpHash String
+  expiresAt     DateTime
+  consumedAt    DateTime?
+  attemptCount  Int       @default(0)
+  createdAt     DateTime  @default(now())
+
+  @@index([email, createdAt])
+  @@index([requestIpHash, createdAt])
+}
+
+model UserProfile {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  level                 String   @default("B1")
+  vocabularySize        Int      @default(0)
+  readingScore          Float    @default(0)
+  listeningScore        Float    @default(0)
+  grammarScore          Float    @default(0)
+  goals                 String?
+  interests             String?
+  weakPoints            String?
+  dailyMinutes          Int      @default(30)
+  readingPreset1        Int      @default(15)
+  readingPreset2        Int      @default(25)
+  readingPreset3        Int      @default(40)
+  defaultReadingMinutes Int?     @default(25)
+  idlePauseMinutes      Int?     @default(10)
+  aiExplanationLanguage      String   @default("zh-CN")
+  dictionaryTranslationMode  String   @default("manual")
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// Kept for the existing audio/video pages during the reading-first MVP.
+model MediaFile {
+  id               String                  @id @default(cuid())
+  userId           String
+  title            String
+  description      String?
+  type             String
+  url              String
+  thumbnailUrl     String?
+  fileSize         Int
+  duration         Float?
+  mimeType         String
+  category         String?
+  status           String                  @default("pending")
+  totalPages       Int?
+  totalChapters    Int?
+  createdAt        DateTime                @default(now())
+  updatedAt        DateTime                @updatedAt
+  legacyProgresses LegacyReadingProgress[]
+  sources          Source[]
+  user             User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([type])
+  @@index([status])
+  @@map("media_files")
+}
+
+model Vocabulary {
+  id            String   @id @default(cuid())
+  userId        String
+  word          String
+  meaning       String?
+  translation   String?
+  example       String?
+  pronunciation String?
+  notes         String?
+  status        String   @default("new")
+  learned       Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  sources       Source[]
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("vocabulary")
+}
+
+model Source {
+  id           String     @id @default(cuid())
+  vocabularyId String
+  mediaId      String
+  context      String?
+  page         Int?
+  highlighted  Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  media        MediaFile  @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+  vocabulary   Vocabulary @relation(fields: [vocabularyId], references: [id], onDelete: Cascade)
+
+  @@index([mediaId])
+  @@index([vocabularyId])
+}
+
+model LegacyReadingProgress {
+  id        String    @id @default(cuid())
+  userId    String
+  mediaId   String
+  page      Int       @default(0)
+  chapter   Int       @default(0)
+  position  String?
+  status    String    @default("reading")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  media     MediaFile @relation(fields: [mediaId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, mediaId])
+  @@index([userId])
+  @@map("reading_progress")
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  userId    String
+  role      String
+  content   String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("chat_messages")
+}
+
+model Content {
+  id                 String                 @id @default(cuid())
+  userId             String?
+  title              String
+  author             String?
+  description        String?
+  format             String
+  source             String                 @default("UPLOAD")
+  status             String                 @default("PROCESSING")
+  language           String                 @default("en")
+  fileUrl            String
+  coverUrl           String?
+  license            String?
+  errorMessage       String?
+  sectionCount       Int                    @default(0)
+  sourceSectionCount Int?
+  parserVersion      Int                    @default(1)
+  navigationJson     String?
+  wordCount          Int                    @default(0)
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+  user               User?                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sections           ContentSection[]
+  progresses         ReadingProgress[]
+  highlights         Highlight[]
+  occurrences        VocabularyOccurrence[]
+  events             LearningEvent[]
+  sectionProgresses  SectionProgress[]
+  readingSessions    ReadingSession[]
+  readingTimeDeltas  ReadingTimeDelta[]
+  importOperations   ImportOperation[]
+  reparseBatches     ReparseBatch[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([format])
+}
+
+model ContentSection {
+  id                String                 @id @default(cuid())
+  contentId         String
+  orderIndex        Int
+  title             String
+  chapterTitle      String?
+  kind              String                 @default("CHAPTER")
+  locator           String?
+  plainText         String
+  wordCount         Int                    @default(0)
+  createdAt         DateTime               @default(now())
+  content           Content                @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  segments          ContentSegment[]
+  progresses        ReadingProgress[]
+  highlights        Highlight[]
+  occurrences       VocabularyOccurrence[]
+  events            LearningEvent[]
+  studyProgresses   SectionProgress[]
+  readingSessions   ReadingSession[]
+  readingTimeDeltas ReadingTimeDelta[]
+
+  @@unique([contentId, orderIndex])
+  @@index([contentId])
+}
+
+model ContentSegment {
+  id          String                 @id @default(cuid())
+  sectionId   String
+  orderIndex  Int
+  text        String
+  wordCount   Int                    @default(0)
+  section     ContentSection         @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  highlights  Highlight[]
+  occurrences VocabularyOccurrence[]
+
+  @@unique([sectionId, orderIndex])
+  @@index([sectionId])
+}
+
+model ReadingProgress {
+  id                String          @id @default(cuid())
+  userId            String
+  contentId         String
+  sectionId         String?
+  position          String?
+  completionPercent Float           @default(0)
+  secondsSpent      Int             @default(0)
+  status            String          @default("READING")
+  lastReadAt        DateTime        @default(now())
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+  user              User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content           Content         @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  section           ContentSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, contentId])
+  @@index([userId, lastReadAt])
+}
+
+model SectionProgress {
+  id             String         @id @default(cuid())
+  userId         String
+  contentId      String
+  sectionId      String
+  status         String         @default("READING")
+  secondsSpent   Int            @default(0)
+  lookupCount    Int            @default(0)
+  savedWordCount Int            @default(0)
+  highlightCount Int            @default(0)
+  lastQuizScore  Float?
+  bestQuizScore  Float?
+  completedAt    DateTime?
+  lastStudiedAt  DateTime       @default(now())
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content        Content        @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  section        ContentSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, sectionId])
+  @@index([userId, status, lastStudiedAt])
+  @@index([contentId])
+}
+
+model VocabularyEntry {
+  id                    String           @id @default(cuid())
+  lemma                 String
+  language              String           @default("en")
+  entryType             String?          @default("WORD")
+  phonetic              String?
+  audioUrl              String?
+  definition            String?
+  meaningsJson          String?
+  dictionaryProvider    String?
+  dictionarySourceUrl   String?
+  dictionaryLicenseName String?
+  dictionaryLicenseUrl  String?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  users                 UserVocabulary[]
+
+  @@unique([lemma, language])
+  @@index([lemma])
+}
+
+model UserVocabulary {
+  id             String                 @id @default(cuid())
+  userId         String
+  entryId        String
+  meaning        String?
+  translation    String?
+  notes          String?
+  status         String                 @default("NEW")
+  mastery        Float                  @default(0)
+  nextReview     DateTime               @default(now())
+  intervalDays   Int                    @default(0)
+  easeFactor     Float                  @default(2.5)
+  reviewCount    Int                    @default(0)
+  errorCount     Int                    @default(0)
+  lastReviewedAt DateTime?
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  entry          VocabularyEntry        @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  occurrences    VocabularyOccurrence[]
+  events         LearningEvent[]
+
+  @@unique([userId, entryId])
+  @@index([userId, nextReview])
+}
+
+model VocabularyOccurrence {
+  id               String          @id @default(cuid())
+  userVocabularyId String
+  contentId        String
+  sectionId        String?
+  segmentId        String?
+  selectedText     String
+  context          String?
+  locator          String?
+  sourceType       String          @default("BOOK_TEXT")
+  parentLemma      String?
+  createdAt        DateTime        @default(now())
+  userVocabulary   UserVocabulary  @relation(fields: [userVocabularyId], references: [id], onDelete: Cascade)
+  content          Content         @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  section          ContentSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  segment          ContentSegment? @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+
+  @@index([userVocabularyId])
+  @@index([contentId])
+}
+
+model Highlight {
+  id             String          @id @default(cuid())
+  userId         String
+  contentId      String
+  sectionId      String?
+  segmentId      String?
+  labelId        String?
+  quote          String
+  color          String          @default("YELLOW")
+  note           String?
+  locator        String?
+  nextReview     DateTime?
+  intervalDays   Int             @default(0)
+  easeFactor     Float           @default(2.5)
+  reviewCount    Int             @default(0)
+  lastRating     String?
+  lastReviewedAt DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content        Content         @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  section        ContentSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  segment        ContentSegment? @relation(fields: [segmentId], references: [id], onDelete: SetNull)
+  label          HighlightLabel? @relation(fields: [labelId], references: [id], onDelete: SetNull)
+
+  @@index([userId, contentId])
+  @@index([userId, nextReview, color])
+  @@index([labelId])
+}
+
+model HighlightLabel {
+  id            String      @id @default(cuid())
+  userId        String
+  name          String
+  color         String
+  slotKey       String?
+  reviewEnabled Boolean?
+  sortOrder     Int         @default(0)
+  archived      Boolean     @default(false)
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  highlights    Highlight[]
+
+  @@unique([userId, slotKey])
+  @@index([userId, archived, sortOrder])
+  @@index([userId, reviewEnabled])
+}
+
+model LearningEvent {
+  id               String          @id @default(cuid())
+  userId           String
+  contentId        String?
+  sectionId        String?
+  userVocabularyId String?
+  eventType        String
+  payload          String?
+  requestId        String?         @unique
+  sessionId        String?
+  operationType    String?
+  bindingHash      String?
+  resultEntityId   String?
+  createdAt        DateTime        @default(now())
+  user             User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content          Content?        @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  section          ContentSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+  userVocabulary   UserVocabulary? @relation(fields: [userVocabularyId], references: [id], onDelete: SetNull)
+  session          ReadingSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, eventType, createdAt])
+  @@index([userId, operationType, createdAt])
+  @@index([userId, createdAt])
+  @@index([eventType])
+}
+
+model AiResultCache {
+  id                String               @id @default(cuid())
+  userId            String
+  inputHash         String
+  requestType       String
+  output            String
+  provider          String
+  model             String?
+  hitCount          Int                  @default(0)
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  user              User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  quotaReservations AiQuotaReservation[] @relation("QuotaReservationCache")
+
+  @@unique([userId, inputHash, requestType])
+  @@index([userId, createdAt])
+}
+
+model AiUsageLog {
+  id          String   @id @default(cuid())
+  userId      String
+  requestType String
+  provider    String
+  quotaMode   String   @default("METERED")
+  cached      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model LearningPlan {
+  id        String   @id @default(cuid())
+  userId    String
+  planDate  DateTime
+  status    String   @default("ACTIVE")
+  planJson  String
+  rationale String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, planDate])
+  @@index([userId, status])
+}
+
+model AiDailyQuota {
+  id            String               @id @default(cuid())
+  userId        String
+  quotaDay      String
+  successCount  Int                  @default(0)
+  reservedCount Int                  @default(0)
+  createdAt     DateTime             @default(now())
+  updatedAt     DateTime             @updatedAt
+  user          User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reservations  AiQuotaReservation[] @relation("QuotaDayReservations")
+
+  @@unique([userId, quotaDay])
+}
+
+model AiQuotaReservation {
+  id                  String         @id @default(cuid())
+  requestId           String         @unique
+  userId              String
+  requestType         String
+  quotaMode           String         @default("METERED")
+  inputHash           String
+  targetScope         String?
+  quotaDay            String
+  status              String         @default("RESERVED")
+  expiresAt           DateTime
+  resultPayload       String?
+  resultSchemaVersion String?
+  resultFingerprint   String?
+  resultCacheId       String?
+  dispatchStartedAt   DateTime?
+  providerDeadlineAt  DateTime?
+  completedAt         DateTime?
+  completedProvider   String?
+  completedModel      String?
+  releasedAt          DateTime?
+  releaseReason       String?
+  expiredAt           DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+  dailyQuota          AiDailyQuota   @relation("QuotaDayReservations", fields: [userId, quotaDay], references: [userId, quotaDay], onDelete: Cascade)
+  resultCache         AiResultCache? @relation("QuotaReservationCache", fields: [resultCacheId], references: [id], onDelete: SetNull)
+
+  @@index([userId, quotaDay, status])
+  @@index([status, expiresAt])
+  @@index([userId, requestType, createdAt])
+  @@index([userId, requestType, inputHash])
+}
+
+model UserAiCredential {
+  id              String   @id @default(cuid())
+  userId          String   @unique
+  provider        String   @default("deepseek")
+  encryptedApiKey String
+  encryptionIv    String
+  authTag         String
+  keyLast4        String
+  formatVersion   String   @default("v1")
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ReadingSession {
+  id               String             @id @default(cuid())
+  userId           String
+  contentId        String
+  currentSectionId String?
+  status           String             @default("OPEN")
+  startedAt        DateTime           @default(now())
+  closedAt         DateTime?
+  closeRequestId   String?            @unique
+  summaryJson      String?
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  user             User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content          Content            @relation(fields: [contentId], references: [id], onDelete: Cascade)
+  currentSection   ContentSection?    @relation(fields: [currentSectionId], references: [id], onDelete: SetNull)
+  lease            ReadingLease?
+  deltas           ReadingTimeDelta[]
+  events           LearningEvent[]
+
+  @@index([userId, status, startedAt])
+  @@index([contentId, status])
+}
+
+model ReadingLease {
+  id                       String         @id @default(cuid())
+  userId                   String         @unique
+  sessionId                String         @unique
+  ownerToken               String         @unique
+  fencingVersion           Int            @default(1)
+  leaseExpiresAt           DateTime
+  heartbeatIntervalSeconds Int
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
+  user                     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session                  ReadingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([leaseExpiresAt])
+}
+
+model ReadingTimeDelta {
+  id             String          @id @default(cuid())
+  deltaId        String          @unique
+  userId         String
+  sessionId      String?
+  contentId      String?
+  sectionId      String?
+  kind           String          @default("LIVE")
+  seconds        Int
+  ownerToken     String?
+  fencingVersion Int?
+  sourceKey      String?
+  acceptedAt     DateTime        @default(now())
+  createdAt      DateTime        @default(now())
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session        ReadingSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  content        Content?        @relation(fields: [contentId], references: [id], onDelete: SetNull)
+  section        ContentSection? @relation(fields: [sectionId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, kind, sourceKey])
+  @@index([userId, acceptedAt])
+  @@index([sessionId, acceptedAt])
+  @@index([contentId, sectionId])
+}
+
+model ImportOperation {
+  id                 String   @id @default(cuid())
+  idempotencyKey     String   @unique
+  userId             String
+  operationType      String   @default("PASTE_IMPORT")
+  bindingHash        String
+  previewFingerprint String
+  title              String
+  author             String?
+  contentHash        String
+  status             String   @default("PENDING")
+  tempSourcePath     String?
+  finalSourcePath    String?
+  tempCoverPath      String?
+  finalCoverPath     String?
+  contentId          String?
+  cleanupStatus      String?
+  resultJson         String?
+  errorCode          String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  user               User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content            Content? @relation(fields: [contentId], references: [id], onDelete: SetNull)
+
+  @@index([userId, status, createdAt])
+  @@index([status, updatedAt])
+}
+
+model ReparseBatch {
+  id                   String   @id @default(cuid())
+  batchId              String   @unique
+  userId               String
+  contentId            String
+  contentFingerprint   String
+  protectedFingerprint String
+  status               String   @default("COMPLETED")
+  resultJson           String
+  committedAt          DateTime @default(now())
+  createdAt            DateTime @default(now())
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  content              Content  @relation(fields: [contentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, contentId, contentFingerprint, protectedFingerprint])
+  @@index([contentId, committedAt])
+}
