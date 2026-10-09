@@ -14,32 +14,23 @@ Enjoy English — Reading Room 是一个面向中文母语成人学习者的英�
 
 以下为实际使用界面截图。书籍内容由用户自行导入，截图中的书籍不随仓库分发；部分功能依赖配置，阅读计时与本次阅读统计需启用 `READING_LEDGER_ENABLED=true`。
 
-<details>
-<summary>进入阅读室 · 登录与书架</summary>
+### 进入阅读室 · 登录与书架
 
 ![登录页面：一间属于你的英文阅读室](docs/images/login.jpg)
 
 ![书架：导入第一本 EPUB、PDF 或 TXT](docs/images/bookshelf.jpg)
 
-</details>
-
-<details>
-<summary>开始阅读 · 首页与阅读时长目标</summary>
+### 开始阅读 · 首页与阅读时长目标
 
 ![首页：从自己的书籍开始阅读](docs/images/home.png)
 
 ![阅读目标：选择阅读时长或不计时](docs/images/reading-goal.png)
 
-</details>
-
-<details>
-<summary>留下积累 · 生词本与本次阅读统计</summary>
+### 留下积累 · 生词本与本次阅读统计
 
 ![生词本：保存词汇释义、原文语境和书籍来源](docs/images/vocabulary.png)
 
 ![本次阅读统计：阅读时间、查词、保存生词和新增高亮](docs/images/reading-summary.png)
-
-</details>
 
 ## 产品目标
 
