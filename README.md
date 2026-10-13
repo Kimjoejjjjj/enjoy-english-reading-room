@@ -144,12 +144,16 @@ Enjoy English — Reading Room 是一个面向中文母语成人学习者的英�
 ### 1. 克隆与安装
 
 ```bash
-git clone https://github.com/Kimjoejjjjj/enjoy-english-reading-room.git
+git clone --depth 1 https://github.com/Kimjoejjjjj/enjoy-english-reading-room.git
 cd enjoy-english-reading-room
 npm ci
 ```
 
-项目会从仓库内固定版本的 Open English WordNet 数据包生成本地词典索引，不需要在安装时下载词典。
+浅克隆只获取最新版本，应用功能不受影响。需要完整提交历史时可执行 `git fetch --unshallow`。
+
+Windows PowerShell 请将本文命令中的 `npm` 写成 `npm.cmd`，避免脚本执行策略拦截。
+
+项目会在首次启动或构建前，从仓库内固定版本的 Open English WordNet 数据包生成本地词典索引，不需要额外下载词典。后续启动会校验缓存；数据包、生成脚本和分片内容未变化时跳过重建，缺失或损坏时自动重新生成。
 
 ### 2. 一键配置本地环境
 
@@ -174,6 +178,16 @@ npm run dev
 ```
 
 复制该六位验证码即可登录。60 秒倒计时只是重新发送的冷却时间；验证码服务端有效期仍为 10 分钟。
+
+本地访问请统一使用 `localhost`（自定义端口时相应替换端口），不要混用 `127.0.0.1`；当前开发服务的来源校验可能拒绝后者的登录请求。
+
+### 再次启动与 AI agent 操作范围
+
+以上安装和初始化步骤用于新副本。已有环境再次启动只需 `npm run dev`；不要重复安装、覆盖 `.env.local` 或重新初始化数据库。
+
+让 AI agent 只负责本地启动时，请要求它按上述三步执行，记录各阶段耗时，首次页面可访问后结束启动任务。无需额外执行生产构建、完整 `lint/check`、升级依赖或修复无关代码；这些属于单独的开发验收任务。首次访问页面可能需要等待开发编译，终端显示服务就绪不等于页面已完成编译。
+
+如果安装长时间没有进展，先保留当前命令和最后的输出。确认原安装进程已经退出后，可使用 `npm ci --foreground-scripts --loglevel verbose` 显示下载及安装脚本日志。不要并行重复安装、删除锁文件、跳过安装脚本或关闭 TLS 校验，也无需为了本地体验配置真实邮件或 AI 服务。分享日志前请删除私人地址、令牌等敏感信息。
 
 ### 正式邮件部署
 

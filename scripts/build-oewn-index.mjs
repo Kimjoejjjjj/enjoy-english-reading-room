@@ -1,11 +1,17 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import path from "node:path";
 import JSZip from "jszip";
 
 const root = process.cwd();
 const archivePath = path.join(root, "vendor", "dictionaries", "english-wordnet-2025-json.zip");
 const outputDir = path.join(root, "vendor", "dictionaries", "generated");
+const manifestPath = path.join(outputDir, "manifest.json");
+const sha256 = (value) => createHash("sha256").update(value).digest("hex");
+const generatorSha256 = sha256(await readFile(new URL(import.meta.url)));
+const shardNames = ["0", ..."abcdefghijklmnopqrstuvwxyz"].flatMap((letter) => [
+  `entries-${letter}.json`, `forms-${letter}.json`,
+]);
 const expectedSha256 = "7D749F6E2C39E6970E4997839DCF6E42FD281F3C2FAE0171D2192BAE8CFA4B51";
 const dataset = {
   provider: "Open English WordNet",
@@ -22,6 +28,27 @@ if (actualSha256 !== expectedSha256) {
   throw new Error(`Open English WordNet archive checksum mismatch: ${actualSha256}`);
 }
 
+try {
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  if (manifest?.archiveSha256 === actualSha256 && manifest.generatorSha256 === generatorSha256) {
+    let valid = true;
+    for (const name of shardNames) {
+      if (sha256(await readFile(path.join(outputDir, name))) !== manifest.files?.[name]) {
+        valid = false;
+        break;
+      }
+    }
+    if (valid) {
+      console.log("Open English WordNet index is up to date; skipped generation.");
+      process.exit(0);
+    }
+  }
+} catch (error) {
+  if (error.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
+}
+
+// A failed or interrupted rebuild must never retain a completion marker.
+await rm(manifestPath, { force: true });
 const zip = await JSZip.loadAsync(archive);
 const synsets = new Map();
 const synsetNames = Object.keys(zip.files).filter((name) => !name.startsWith("entries-") && name !== "frames.json" && name.endsWith(".json")).sort();
@@ -178,5 +205,7 @@ for (const shardName of Object.keys(formIndexes).sort()) {
   await writeFile(path.join(outputDir, `forms-${shardName}.json`), `${JSON.stringify(output)}\n`, "utf8");
 }
 
-await writeFile(path.join(outputDir, "manifest.json"), `${JSON.stringify({ ...dataset, entryShards: entryNames.length, formShards: Object.keys(formIndexes).length, generatedAt: "deterministic-from-pinned-archive" }, null, 2)}\n`, "utf8");
+const files = {};
+for (const name of shardNames) files[name] = sha256(await readFile(path.join(outputDir, name)));
+await writeFile(manifestPath, `${JSON.stringify({ ...dataset, generatorSha256, files, entryShards: entryNames.length, formShards: Object.keys(formIndexes).length, generatedAt: "deterministic-from-pinned-archive" }, null, 2)}\n`, "utf8");
 console.log(`Prepared Open English WordNet ${dataset.version}: ${entryNames.length} entry shards, ${Object.keys(formIndexes).length} form shards, ${synsets.size} synsets.`);
