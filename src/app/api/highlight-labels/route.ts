@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { hasHighlightReviewColumns, highlightReviewLabelSelect, legacyHighlightLabelSelect } from "@/lib/highlight-label-schema";
+import { ensureDefaultHighlightLabels } from "@/lib/highlight-labels-server";
 
 const LABEL_COLORS = new Set(["BRICK", "AMBER", "SAGE", "BLUE", "PLUM"]);
 const PATCH_FIELDS = new Set(["id", "name", "color", "reviewEnabled"]);
@@ -9,6 +10,7 @@ const PATCH_FIELDS = new Set(["id", "name", "color", "reviewEnabled"]);
 export async function GET(req: NextRequest) {
   const userId = getUserId(req);
   if (!userId) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  await ensureDefaultHighlightLabels(userId);
   const highlightReviewSchemaReady = await hasHighlightReviewColumns();
   const labels = await prisma.highlightLabel.findMany({
     where: { userId, archived: false },

@@ -9,7 +9,8 @@ import { legacyHighlightLabelSelect } from "@/lib/highlight-label-schema";
 import { isReadingLedgerEnabled, isUuid } from "@/lib/reading-ledger-contract";
 import { parseReadingEventBinding, readingEventBindingHash } from "@/lib/reading-event-contract";
 
-const HIGHLIGHT_COLORS = ["RED", "YELLOW", "GREEN"];
+// "BLUE" 是「不懂」标签经 labelColorToLegacyColor 映射后的合法落色，与 RED/YELLOW/GREEN 同级。
+const HIGHLIGHT_COLORS = ["RED", "YELLOW", "GREEN", "BLUE"];
 
 function normalizeColor(value: unknown) {
   return typeof value === "string" && HIGHLIGHT_COLORS.includes(value) ? value : null;
