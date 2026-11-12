@@ -8,6 +8,8 @@ import { defaultReadingGoalKey } from "@/components/reader/ReadingGoalDialog";
 import { DEFAULT_READING_PREFERENCES, normalizeReadingPreferences } from "@/lib/reading-preferences";
 import { readDictionaryCardOverflowMode, writeDictionaryCardOverflowMode, type DictionaryCardOverflowMode } from "@/lib/dictionary-card-preference";
 import { readDictionaryDisplayMode, writeDictionaryDisplayMode, type DictionaryDisplayMode } from "@/lib/dictionary-display-preference";
+import { AI_PROVIDER_PRESETS, DEFAULT_AI_MODEL, getAiProviderPreset } from "@/lib/ai-providers";
+import PaperSelect from "@/components/ui/PaperSelect";
 import type { ReadingPreferences } from "@/types";
 
 interface UserProfile {
@@ -43,6 +45,9 @@ interface AiCredentialStatus {
   provider: string;
   keyLast4: string | null;
   updatedAt: string | null;
+  baseUrl?: string | null;
+  model?: string | null;
+  readable?: boolean;
 }
 
 export default function SettingsPage() {
@@ -66,6 +71,12 @@ export default function SettingsPage() {
   const [aiTestError, setAiTestError] = useState<string | null>(null);
   const [aiCredential, setAiCredential] = useState<AiCredentialStatus | null>(null);
   const [aiKeyInput, setAiKeyInput] = useState("");
+  const [aiProvider, setAiProvider] = useState("deepseek");
+  const [aiBaseUrl, setAiBaseUrl] = useState(getAiProviderPreset("deepseek").baseUrl);
+  const [aiModel, setAiModel] = useState(DEFAULT_AI_MODEL);
+  const [aiModelOptions, setAiModelOptions] = useState<string[]>(getAiProviderPreset("deepseek").models);
+  const [aiModelCustom, setAiModelCustom] = useState(false);
+  const [loadingAiModels, setLoadingAiModels] = useState(false);
   const [savingAiKey, setSavingAiKey] = useState(false);
   const [aiCredentialMessage, setAiCredentialMessage] = useState<string | null>(null);
   const [dictionaryTranslationMode, setDictionaryTranslationMode] = useState<"manual" | "auto">("manual");
@@ -110,7 +121,15 @@ export default function SettingsPage() {
       .catch(() => setAiExplanationLanguage("zh-CN"));
     void fetch("/api/user/ai-credential")
       .then((response) => response.ok ? response.json() as Promise<AiCredentialStatus> : Promise.reject(new Error("credential")))
-      .then(setAiCredential)
+      .then((data) => {
+        setAiCredential(data);
+        const preset = getAiProviderPreset(data.provider);
+        setAiProvider(preset.id);
+        setAiBaseUrl(data.baseUrl || preset.baseUrl);
+        setAiModel(data.model || (preset.id === "deepseek" ? DEFAULT_AI_MODEL : preset.models[0] || ""));
+        setAiModelOptions(preset.models);
+        setAiModelCustom(typeof data.model === "string" && data.model.length > 0 && !preset.models.includes(data.model));
+      })
       .catch(() => setAiCredential(null));
   }, [loadProfile]);
 
@@ -124,20 +143,20 @@ export default function SettingsPage() {
 
   const saveAiCredential = async () => {
     if (!aiKeyInput.trim()) return;
-    const confirmed = window.confirm(zh ? "测试会使用你的 DeepSeek Key 发送一次很短的请求；成功后 Key 将加密保存到账户。是否继续？" : "This sends one short request with your DeepSeek key. If successful, the key is encrypted and saved to your account. Continue?");
+    const confirmed = window.confirm(zh ? `测试会使用你的 ${aiProviderLabel} Key 发送一次很短的请求；成功后 Key 将加密保存到账户。是否继续？` : `This sends one short request with your ${aiProviderLabel} key. If successful, the key is encrypted and saved to your account. Continue?`);
     if (!confirmed) return;
     setSavingAiKey(true);
     setAiCredentialMessage(null);
     try {
-      const response = await fetch("/api/user/ai-credential", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ apiKey: aiKeyInput.trim() }) });
-      const data = await response.json() as AiCredentialStatus & { error?: string };
-      if (!response.ok) throw new Error(data.error || (zh ? "DeepSeek Key 验证失败。" : "DeepSeek key validation failed."));
+      const response = await fetch("/api/user/ai-credential", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ apiKey: aiKeyInput.trim(), provider: aiProvider, baseUrl: aiBaseUrl.trim(), model: aiModel.trim() }) });
+      const data = await response.json() as AiCredentialStatus & { error?: string; detail?: string | null };
+      if (!response.ok) throw new Error([data.error || (zh ? "API Key 验证失败。" : "API key validation failed."), typeof data.detail === "string" ? data.detail : ""].filter(Boolean).join(" · "));
       setAiCredential(data);
       setAiKeyInput("");
       setAiCredentialMessage(zh ? "连接成功，Key 已加密保存。" : "Connected. The key is encrypted and saved.");
-      setAiStatus((current) => ({ active: true, configured: true, provider: "deepseek", model: current?.model, usageMode: "byok" }));
+      setAiStatus((current) => ({ active: true, configured: true, provider: aiProvider, model: data.model || aiModel, usageMode: "byok" }));
     } catch (cause) {
-      setAiCredentialMessage(cause instanceof Error ? cause.message : (zh ? "DeepSeek Key 保存失败。" : "Unable to save the DeepSeek key."));
+      setAiCredentialMessage(cause instanceof Error ? cause.message : (zh ? "API Key 保存失败。" : "Unable to save the API key."));
     } finally {
       setSavingAiKey(false);
     }
@@ -148,9 +167,65 @@ export default function SettingsPage() {
     const response = await fetch("/api/user/ai-credential", { method: "DELETE" });
     if (response.ok) {
       setAiCredential(await response.json());
+      setAiProvider("deepseek");
+      setAiBaseUrl(getAiProviderPreset("deepseek").baseUrl);
+      setAiModel(DEFAULT_AI_MODEL);
+      setAiModelOptions(getAiProviderPreset("deepseek").models);
+      setAiModelCustom(false);
       setDictionaryTranslationMode("manual");
       await fetch("/api/user/ai-preferences", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ dictionaryTranslationMode: "manual" }) });
-      setAiCredentialMessage(zh ? "DeepSeek Key 已删除。" : "DeepSeek key deleted.");
+      setAiCredentialMessage(zh ? "API Key 已删除。" : "API key deleted.");
+    }
+  };
+
+  const CUSTOM_MODEL_VALUE = "__custom_model__";
+  const aiProviderPreset = getAiProviderPreset(aiProvider);
+  const aiProviderLabel = aiProviderPreset.label;
+  const aiProviderSelectOptions = AI_PROVIDER_PRESETS.map((preset) => ({ value: preset.id, label: preset.label }));
+  const aiModelSelectOptions = [
+    ...aiModelOptions.map((model) => ({ value: model, label: model })),
+    { value: CUSTOM_MODEL_VALUE, label: zh ? "手动输入模型 / 接入点…" : "Enter a model or endpoint manually…" },
+  ];
+
+  const changeAiProvider = (value: string) => {
+    const preset = getAiProviderPreset(value);
+    setAiProvider(preset.id);
+    setAiBaseUrl(preset.baseUrl);
+    setAiModelOptions(preset.models);
+    setAiModel(preset.id === "deepseek" ? DEFAULT_AI_MODEL : preset.models[0] || "");
+    setAiModelCustom(preset.id !== "deepseek" && preset.models.length === 0);
+    setAiCredentialMessage(null);
+  };
+
+  const changeAiModel = (value: string) => {
+    if (value === CUSTOM_MODEL_VALUE) {
+      setAiModelCustom(true);
+      setAiModel("");
+      return;
+    }
+    setAiModelCustom(false);
+    setAiModel(value);
+  };
+
+  const loadAiModels = async () => {
+    setLoadingAiModels(true);
+    setAiCredentialMessage(null);
+    try {
+      const response = await fetch("/api/user/ai-models", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ apiKey: aiKeyInput.trim(), provider: aiProvider, baseUrl: aiBaseUrl.trim() }) });
+      const data = await response.json() as { supported?: boolean; models?: string[]; error?: string; detail?: string | null };
+      if (!response.ok) throw new Error([data.error || (zh ? "获取模型列表失败。" : "Unable to load models."), typeof data.detail === "string" ? data.detail : ""].filter(Boolean).join(" · "));
+      if (!data.supported || !data.models?.length) {
+        setAiCredentialMessage(zh ? "该服务商不支持自动列出模型，请手动填写模型名，或到控制台复制接入点 ID（火山方舟为 ep- 开头）。" : "This provider cannot list models automatically. Enter the model name manually, or copy the endpoint ID from your console.");
+        return;
+      }
+      setAiModelOptions(data.models);
+      setAiModelCustom(false);
+      if (!data.models.includes(aiModel)) setAiModel(data.models[0]);
+      setAiCredentialMessage(zh ? `已读取 ${data.models.length} 个可用模型，在模型框中直接选择即可。` : `Loaded ${data.models.length} models. Pick one in the model field.`);
+    } catch (cause) {
+      setAiCredentialMessage(cause instanceof Error ? cause.message : (zh ? "获取模型列表失败。" : "Unable to load models."));
+    } finally {
+      setLoadingAiModels(false);
     }
   };
 
@@ -237,7 +312,7 @@ export default function SettingsPage() {
       const data = await response.json();
       if (!response.ok) {
         const quotaUnavailable = typeof data.failureCode === "string" && data.failureCode.startsWith("QUOTA_");
-        throw new Error(quotaUnavailable ? (zh ? "AI 暂不可用" : "AI is temporarily unavailable") : data.error || (zh ? "AI 连接失败" : "AI connection failed"));
+        throw new Error(quotaUnavailable ? (zh ? "AI 暂不可用" : "AI is temporarily unavailable") : [data.error || (zh ? "AI 连接失败" : "AI connection failed"), typeof data.detail === "string" ? data.detail : ""].filter(Boolean).join(" · "));
       }
       setAiTestResult(data);
       setAiStatus((current) => current ? { ...current, active: true, configured: true, remaining: data.remaining, provider: data.provider, model: data.model } : current);
@@ -327,9 +402,35 @@ export default function SettingsPage() {
           <div className="mt-4 grid grid-cols-2 gap-3"><button type="button" onClick={() => setAiExplanationLanguage("zh-CN")} className={`rounded-xl border px-4 py-3 text-sm font-semibold ${aiExplanationLanguage === "zh-CN" ? "border-[var(--green)] bg-[var(--green)] text-white" : "border-[var(--shelf-line)] bg-white/45 hover:border-[var(--green)]"}`}>中文解释</button><button type="button" onClick={() => setAiExplanationLanguage("en")} className={`rounded-xl border px-4 py-3 text-sm font-semibold ${aiExplanationLanguage === "en" ? "border-[var(--green)] bg-[var(--green)] text-white" : "border-[var(--shelf-line)] bg-white/45 hover:border-[var(--green)]"}`}>English explanations</button></div>
         </div>
         <div className="mt-5 rounded-2xl border border-[var(--shelf-line)] bg-[#fffdf8]/65 p-5">
-          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold">{zh ? "我的 DeepSeek API Key" : "My DeepSeek API key"}</h3><p className="mt-1 max-w-xl text-xs leading-5 text-[var(--ink-soft)]">{zh ? "验证成功后由服务器使用 AES-256-GCM 加密保存，可跨设备使用。页面不会读取或回显完整 Key。所有费用由你的 DeepSeek 账户承担，本站不设置每日次数上限。" : "After validation, the server encrypts the key with AES-256-GCM for cross-device use. The full key is never returned to this page. Charges belong to your DeepSeek account; this site sets no daily request limit."}</p></div>{aiCredential?.configured && <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-800">DeepSeek · •••• {aiCredential.keyLast4}</span>}</div>
+          <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold">{zh ? "我的 AI API Key" : "My AI API key"}</h3><p className="mt-1 max-w-xl text-xs leading-5 text-[var(--ink-soft)]">{zh ? "支持 DeepSeek、火山方舟、通义千问、Kimi、智谱、OpenAI、OpenRouter 以及其他 OpenAI 兼容服务。验证成功后由服务器使用 AES-256-GCM 加密保存，可跨设备使用。页面不会读取或回显完整 Key。所有费用由你的服务商账户承担，本站不设置每日次数上限。" : "DeepSeek, Volcengine Ark, Qwen, Kimi, Zhipu, OpenAI, OpenRouter and other OpenAI-compatible providers are supported. After validation, the server encrypts the key with AES-256-GCM for cross-device use. The full key is never returned to this page. Charges belong to your provider account; this site sets no daily request limit."}</p></div>{aiCredential?.configured && <span className="rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-800">{getAiProviderPreset(aiCredential.provider).label} · •••• {aiCredential.keyLast4}</span>}</div>
+          {aiCredential?.configured && aiCredential.readable === false && <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">{zh ? "已保存的 Key 无法解密（可能是服务器的加密密钥已更换）。请重新填写并保存。" : "The saved key cannot be decrypted, possibly because the server encryption key changed. Enter and save it again."}</p>}
           {!aiCredential?.encryptionConfigured && <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900">{zh ? "服务器尚未配置 AI_CREDENTIAL_ENCRYPTION_KEY，因此暂时不能安全保存用户 Key。" : "AI_CREDENTIAL_ENCRYPTION_KEY is not configured, so user keys cannot be stored safely yet."}</p>}
-          <div className="mt-4 flex flex-col gap-3 sm:flex-row"><input type="password" autoComplete="off" spellCheck={false} value={aiKeyInput} onChange={(event) => setAiKeyInput(event.target.value.slice(0, 512))} placeholder={aiCredential?.configured ? (zh ? "输入新 Key 以更换" : "Enter a new key to replace it") : "sk-…"} className="h-11 min-w-0 flex-1 rounded-xl border border-[var(--shelf-line)] bg-white px-4 text-sm outline-none focus:border-[var(--green)]" /><button type="button" disabled={savingAiKey || !aiKeyInput.trim() || !aiCredential?.encryptionConfigured} onClick={() => void saveAiCredential()} className="h-11 shrink-0 rounded-full bg-[var(--green)] px-5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45">{savingAiKey ? (zh ? "测试中…" : "Testing…") : aiCredential?.configured ? (zh ? "测试并更换" : "Test and replace") : (zh ? "测试并保存" : "Test and save")}</button>{aiCredential?.configured && <button type="button" onClick={() => void deleteAiCredential()} className="h-11 shrink-0 rounded-full border border-red-200 bg-red-50 px-5 text-sm font-semibold text-red-700 hover:bg-red-100">{zh ? "删除 Key" : "Delete key"}</button>}</div>
+          <div className="mt-4 grid gap-3 sm:grid-cols-2">
+            <div>
+              <span className="block text-xs font-semibold text-[var(--ink-soft)]">{zh ? "服务商" : "Provider"}</span>
+              <div className="mt-1"><PaperSelect ariaLabel={zh ? "服务商" : "Provider"} value={aiProvider} options={aiProviderSelectOptions} onChange={changeAiProvider} /></div>
+            </div>
+            <div>
+              <span className="block text-xs font-semibold text-[var(--ink-soft)]">{zh ? "模型" : "Model"}</span>
+              {aiModelCustom ? (
+                <div className="mt-1 flex items-center gap-2">
+                  <input type="text" autoComplete="off" spellCheck={false} value={aiModel} onChange={(event) => setAiModel(event.target.value.slice(0, 120))} placeholder={aiProviderPreset.modelPlaceholder} className="h-11 min-w-0 flex-1 rounded-xl border border-[var(--shelf-line)] bg-white px-3 text-sm font-normal outline-none focus:border-[var(--green)]" />
+                  <button type="button" onClick={() => { setAiModelCustom(false); setAiModel(aiModelOptions[0] || ""); }} className="h-11 shrink-0 rounded-xl border border-[var(--shelf-line)] bg-white px-3 text-xs font-semibold hover:border-[var(--green)]">{zh ? "返回列表" : "Back to list"}</button>
+                </div>
+              ) : (
+                <div className="mt-1"><PaperSelect ariaLabel={zh ? "模型" : "Model"} value={aiModel} options={aiModelSelectOptions} onChange={changeAiModel} placeholder={aiProviderPreset.modelPlaceholder} /></div>
+              )}
+            </div>
+          </div>
+          <label className="mt-3 block text-xs font-semibold text-[var(--ink-soft)]">{zh ? "API 地址（OpenAI 兼容，不需要以 /chat/completions 结尾）" : "API base URL (OpenAI-compatible, without /chat/completions)"}
+            <input type="text" autoComplete="off" spellCheck={false} readOnly={!aiProviderPreset.customBaseUrl} value={aiBaseUrl} onChange={(event) => setAiBaseUrl(event.target.value.slice(0, 200))} placeholder="https://api.example.com/v1" className={`mt-1 h-11 w-full rounded-xl border border-[var(--shelf-line)] px-3 font-mono text-xs font-normal outline-none focus:border-[var(--green)] ${aiProviderPreset.customBaseUrl ? "bg-white" : "bg-[var(--paper)] text-[var(--ink-soft)]"}`} />
+          </label>
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <button type="button" disabled={loadingAiModels || (!aiKeyInput.trim() && !aiCredential?.configured)} onClick={() => void loadAiModels()} className="inline-flex shrink-0 items-center gap-1.5 text-xs font-semibold text-[var(--green)] underline decoration-[var(--shelf-line)] underline-offset-4 hover:decoration-[var(--green)] disabled:cursor-not-allowed disabled:opacity-45">{loadingAiModels && <Loader2 className="animate-spin" size={13} />}{loadingAiModels ? (zh ? "正在读取…" : "Loading…") : (zh ? "从账号刷新列表" : "Refresh list from my account")}</button>
+            <p className="max-w-xl text-[11px] leading-4 text-[var(--ink-soft)]">{zh ? "先在下方填入 Key 再点击。能列出模型时会直接替换下拉选项；不支持的服务商请手动填写。火山方舟的接入点（ep- 开头）是账号私有资源，若未列出，请到控制台复制。" : "Enter your key below first. Supported providers replace the dropdown with your available models; otherwise enter the model manually. Volcengine endpoint IDs (ep-) are account-specific, so copy them from your console if they are not listed."}</p>
+          </div>
+          {aiProviderPreset.customBaseUrl && <p className="mt-2 text-[11px] leading-4 text-[var(--ink-soft)]">{zh ? "默认只允许公网 HTTPS 地址。自托管本地模型时，需在服务器 .env.local 设置 AI_ALLOW_PRIVATE_BASE_URL=true，才能使用 http://localhost 这类地址。" : "Only public HTTPS URLs are allowed by default. For a self-hosted local model, set AI_ALLOW_PRIVATE_BASE_URL=true in the server .env.local to allow addresses such as http://localhost."}</p>}
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row"><input type="password" autoComplete="off" spellCheck={false} value={aiKeyInput} onChange={(event) => setAiKeyInput(event.target.value.slice(0, 512))} placeholder={aiCredential?.configured ? (zh ? "输入新 Key 以更换" : "Enter a new key to replace it") : "sk-…"} className="h-11 min-w-0 flex-1 rounded-xl border border-[var(--shelf-line)] bg-white px-4 text-sm outline-none focus:border-[var(--green)]" /><button type="button" disabled={savingAiKey || !aiKeyInput.trim() || !aiModel.trim() || !aiBaseUrl.trim() || !aiCredential?.encryptionConfigured} onClick={() => void saveAiCredential()} className="h-11 shrink-0 rounded-full bg-[var(--green)] px-5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-45">{savingAiKey ? (zh ? "测试中…" : "Testing…") : aiCredential?.configured ? (zh ? "测试并更换" : "Test and replace") : (zh ? "测试并保存" : "Test and save")}</button>{aiCredential?.configured && <button type="button" onClick={() => void deleteAiCredential()} className="h-11 shrink-0 rounded-full border border-red-200 bg-red-50 px-5 text-sm font-semibold text-red-700 hover:bg-red-100">{zh ? "删除 Key" : "Delete key"}</button>}</div>
           {aiCredentialMessage && <p className="mt-3 rounded-lg bg-[var(--paper)] px-3 py-2 text-xs leading-5 text-[var(--ink-soft)]">{aiCredentialMessage}</p>}
           <div className="mt-5 border-t border-[var(--shelf-line)] pt-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><p className="text-sm font-semibold">{zh ? "缺失中文时自动翻译" : "Translate automatically when Chinese is missing"}</p><p className="mt-1 text-xs leading-5 text-[var(--ink-soft)]">{zh ? "默认关闭。开启后，仅在免费词典没有可靠常用中文对应词时调用你的 Key；缓存命中不会再次调用。" : "Off by default. When enabled, your key is used only when the free dictionary has no reliable common Chinese equivalent; cached results do not call the provider again."}</p></div><button type="button" disabled={!aiCredential?.configured} onClick={() => setDictionaryTranslationMode(dictionaryTranslationMode === "auto" ? "manual" : "auto")} className={`rounded-full border px-4 py-2 text-xs font-semibold ${dictionaryTranslationMode === "auto" ? "border-[var(--green)] bg-[var(--green)] text-white" : "border-[var(--shelf-line)] bg-white/60"} disabled:cursor-not-allowed disabled:opacity-45`}>{dictionaryTranslationMode === "auto" ? (zh ? "已开启" : "On") : (zh ? "已关闭" : "Off")}</button></div></div>
         </div>
@@ -342,8 +443,8 @@ export default function SettingsPage() {
           {aiStatus?.usageMode === "byok" ? <div className="shrink-0 rounded-xl bg-green-50 px-4 py-3 text-center text-xs font-semibold text-green-800">{zh ? "用户 Key · 站内不限次" : "Your key · no site quota"}</div> : typeof aiStatus?.remaining === "number" && typeof aiStatus.limit === "number" && <div className="shrink-0 rounded-xl bg-[var(--paper)] px-4 py-3 text-center"><div className="text-xl font-semibold text-[var(--green)]">{aiStatus.remaining}/{aiStatus.limit}</div><div className="mt-1 text-[10px] uppercase tracking-wider text-[var(--ink-soft)]">{zh ? "今日剩余" : "remaining today"}</div></div>}
         </div>
         {aiStatus?.active && !aiStatus.configured && <div className="mt-4 rounded-2xl border border-amber-200 bg-amber-50/70 p-4 text-xs leading-6 text-amber-950">
-          <p className="font-semibold">{zh ? "在本机配置 DeepSeek" : "Configure DeepSeek on this computer"}</p>
-          <p className="mt-1">{zh ? "打开项目根目录的 .env.local，填写 AI_API_KEY，并保留 AI_BASE_URL、AI_MODEL、AI_PROVIDER 和 AI_DAILY_LIMIT；保存后重启网站。Key 不会显示在此页面。" : "Open .env.local in the project root, set AI_API_KEY, keep the base URL, model, provider and daily limit, then restart the site. The key is never shown here."}</p>
+          <p className="font-semibold">{zh ? "在本机配置站点级 AI" : "Configure site-wide AI on this computer"}</p>
+          <p className="mt-1">{zh ? "在上方选择服务商并保存自己的 Key，即可直接使用；也可以打开项目根目录的 .env.local，填写 AI_API_KEY、AI_BASE_URL、AI_MODEL 和 AI_PROVIDER 作为全站默认服务，保存后重启网站。Key 不会显示在此页面。" : "Save your own key above to start immediately, or open .env.local in the project root and set AI_API_KEY, AI_BASE_URL, AI_MODEL and AI_PROVIDER as the site-wide default, then restart the site. Keys are never shown on this page."}</p>
           <p className="mt-1 break-all font-mono text-[10px] text-amber-800">.env.local</p>
         </div>}
         <div className="mt-4 rounded-2xl border border-[var(--shelf-line)] bg-[#fffdf8]/65 p-4">

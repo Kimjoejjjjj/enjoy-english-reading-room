@@ -42,3 +42,15 @@ export function toggleExpandedDictionaryCard(
 export function removeExpandedDictionaryCard(expandedCardIds: string[], cardId: string): string[] {
   return expandedCardIds.filter((id) => id !== cardId);
 }
+
+/** 新卡置于顶部；确认溢出时先排除指定旧卡，再保留最近的 limit 张。 */
+export function addRecentDictionaryCard<T extends { id: string }>(cards: T[], card: T, removedCardId?: string, limit = MAX_DICTIONARY_CARDS): T[] {
+  return [card, ...cards.filter((item) => item.id !== removedCardId && item.id !== card.id)].slice(0, limit);
+}
+
+/** 再次查询已有卡片时同样按最近使用置顶，不重复发起词典请求。 */
+export function promoteRecentDictionaryCard<T extends { id: string }>(cards: T[], cardId: string): T[] {
+  const existing = cards.find((item) => item.id === cardId);
+  if (!existing || cards[0]?.id === cardId) return cards;
+  return [existing, ...cards.filter((item) => item.id !== cardId)];
+}

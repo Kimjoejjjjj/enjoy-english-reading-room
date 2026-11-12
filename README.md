@@ -97,7 +97,7 @@ Enjoy English — Reading Room 是一个面向中文母语成人学习者的英�
 - 提供统一的 OpenAI-compatible Provider 配置。
 - AI 上下文解释由用户主动触发，不在普通阅读时自动消耗额度。
 - 支持每日调用上限与结果缓存。
-- 可在设置中配置自己的 DeepSeek Key，为词典英文释义生成中文辅助翻译；机器翻译应结合英文原文理解。
+- 可在设置中配置自己的 AI Key（DeepSeek、火山方舟、通义千问、Kimi、智谱、OpenAI、OpenRouter 或自定义 OpenAI 兼容服务），为词典英文释义生成中文辅助翻译；机器翻译应结合英文原文理解。
 - 未配置 API Key、达到额度或 AI 服务失败时，阅读、词典和基础复习仍可工作。
 
 ### 邀请制访问与私有存储
@@ -215,6 +215,33 @@ AI_QUOTA_ENABLED="false"
 ```
 
 如果需要保存用户自己的 AI Key，还需设置一个 32 字节 Base64 编码的 `AI_CREDENTIAL_ENCRYPTION_KEY`。真实 API Key 只应写在本机 `.env.local`，不要提交到 Git 仓库，也不要在网页、Issue 或聊天中粘贴。
+
+#### 支持的 AI 服务商
+
+站点级配置与"设置 → 我的 AI API Key"都支持以下 OpenAI 兼容服务商。`AI_BASE_URL` 不需要以 `/chat/completions` 结尾。
+
+| `AI_PROVIDER` | 服务商 | `AI_BASE_URL` |
+| --- | --- | --- |
+| `deepseek` | DeepSeek | `https://api.deepseek.com` |
+| `volcengine` | 火山方舟 | `https://ark.cn-beijing.volces.com/api/v3` |
+| `qwen` | 阿里百炼 · 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` |
+| `moonshot` | Moonshot · Kimi | `https://api.moonshot.cn/v1` |
+| `zhipu` | 智谱 · GLM | `https://open.bigmodel.cn/api/paas/v4` |
+| `openai` | OpenAI | `https://api.openai.com/v1` |
+| `openrouter` | OpenRouter | `https://openrouter.ai/api/v1` |
+| `custom` | 其他 OpenAI 兼容服务 | 自行填写 |
+
+模型名需要按服务商控制台填写，例如火山方舟可填推理接入点 `ep-xxxxxxxx` 或具体模型名。DeepSeek 之外的请求不会发送 `thinking` 字段，避免不兼容的服务返回 400。
+
+在设置页保存个人 Key 时，服务商、API 地址和模型会与 Key 一起以 AES-256-GCM 加密保存（凭据格式 `v2`），不需要修改数据库结构；早期只保存 DeepSeek Key 的 `v1` 记录仍可正常使用，地址固定回 DeepSeek 官方，模型沿用站点配置。
+
+自定义服务商默认只允许公网 HTTPS 地址，以防服务器被用来请求内网服务。自托管本地模型（如 Ollama）需要使用时，在 `.env.local` 中额外设置：
+
+```env
+AI_ALLOW_PRIVATE_BASE_URL="true"
+```
+
+该开关会允许 `http://localhost` 等本机与内网地址，只应在可信的本地部署中开启。
 
 ### 生产部署
 

@@ -45,6 +45,7 @@ const { signToken } = require("@/lib/auth");
 const { NextRequest } = require("next/server");
 const credentialRoute = require("@/app/api/user/ai-credential/route");
 const translationRoute = require("@/app/api/vocabulary/ai-translation/route");
+const { callAiProvider } = require("@/lib/ai-provider");
 
 const user = await prisma.user.create({ data: { email: `byok-${randomUUID()}@example.invalid` } });
 const token = signToken({ userId: user.id, email: user.email });
@@ -60,7 +61,7 @@ const call = async (route, body, method = "POST") => {
 
 const originalFetch = globalThis.fetch;
 let providerCalls = 0;
-globalThis.fetch = async (url, options) => {
+const routeFetch = async (url, options) => {
   assert.equal(String(url), "https://api.deepseek.com/chat/completions");
   assert.match(String(options?.headers?.Authorization), /^Bearer sk-/);
   providerCalls++;
@@ -69,6 +70,8 @@ globalThis.fetch = async (url, options) => {
   if (!isDictionary) {
     assert.deepEqual(payload.thinking, { type: "disabled" });
     assert.equal(payload.max_tokens, 32);
+  } else {
+    assert.equal(payload.max_tokens, 1200);
   }
   const content = isDictionary
     ? JSON.stringify({ translations: [
@@ -78,6 +81,7 @@ globalThis.fetch = async (url, options) => {
     : "连接成功";
   return new Response(JSON.stringify({ model: "deepseek-chat", choices: [{ finish_reason: "stop", message: { content } }] }), { status: 200, headers: { "Content-Type": "application/json" } });
 };
+globalThis.fetch = routeFetch;
 
 const definitions = [
   { id: "throat-n-1", partOfSpeech: "noun", definition: "the passage to the stomach and lungs" },
@@ -133,6 +137,29 @@ test("deleting the key keeps cached translations but blocks new dictionary AI ca
   assert.equal(uncached.status, 409);
   assert.equal(uncached.data.code, "BYOK_REQUIRED");
   assert.equal(providerCalls, 2);
+});
+
+test("a truncated explanation retries once with doubled output budget", async () => {
+  const bodies = [];
+  globalThis.fetch = async (url, options) => {
+    assert.equal(String(url), "https://ark.cn-beijing.volces.com/api/coding/v3/chat/completions");
+    bodies.push(JSON.parse(String(options?.body)));
+    const first = bodies.length === 1;
+    const content = first ? "{\"summary\":" : JSON.stringify({ summary: "完整的句子解释", nuance: "", paraphrase: "" });
+    return new Response(JSON.stringify({ model: "deepseek-v4.1-flash", choices: [{ finish_reason: first ? "length" : "stop", message: { content } }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const result = await callAiProvider(
+      { requestType: "EXPLAIN", text: "A synthetic sentence for retry testing." },
+      { configured: true, apiKey: "sk-synthetic-retry-key", provider: "volcengine-coding", baseUrl: "https://ark.cn-beijing.volces.com/api/coding/v3", model: "deepseek-v4.1-flash" },
+    );
+    assert.equal(bodies.length, 2);
+    assert.equal(bodies[0].max_tokens, 1024);
+    assert.equal(bodies[1].max_tokens, 2048);
+    assert.equal(JSON.parse(result.output).summary, "完整的句子解释");
+  } finally {
+    globalThis.fetch = routeFetch;
+  }
 });
 
 after(async () => {

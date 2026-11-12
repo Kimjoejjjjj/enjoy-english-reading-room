@@ -7,7 +7,7 @@ import ReaderInspector, { ReaderSelection, SelectionRange } from "@/components/r
 import { createPendingReaderNavigation, isCurrentSectionLoad, isValidReaderRange, PendingReaderNavigation, ReaderNavigationTarget, resolveReaderRanges, resolveSectionLoadFailure, shouldClearSectionTransition, shouldCommitSectionTransition, shouldConsumeReaderNavigation } from "@/lib/reader-navigation";
 import { FocusTimer } from "@/components/reader/FocusTimer";
 import { useLocale } from "@/components/i18n/LocaleProvider";
-import { classifyVocabularySelection } from "@/lib/vocabulary-selection";
+import { normalizeNestedDictionaryWord } from "@/lib/vocabulary-selection";
 import { inlineHighlightClasses, legacyColorToLabelColor, normalizeLabelColor } from "@/lib/highlight-labels";
 
 interface SectionSummary { id: string; orderIndex: number; title: string; chapterTitle?: string | null; kind: string; wordCount: number }
@@ -20,7 +20,8 @@ interface SectionData extends SectionSummary { plainText: string; segments: Segm
 interface RenderRange extends SelectionRange { highlightId: string; color: string }
 
 function vocabularySelection(value: string) {
-  return classifyVocabularySelection(value)?.normalized ?? null;
+  // 多词选区统一进入句子/段落面板；词组由面板提供保存入口，不再自动查词典。
+  return normalizeNestedDictionaryWord(value);
 }
 
 function rangesMatch(left: SelectionRange[], right: SelectionRange[]) {

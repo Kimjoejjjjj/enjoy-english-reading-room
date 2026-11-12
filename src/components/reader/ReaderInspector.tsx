@@ -6,12 +6,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowLeft, BookMarked, ChevronDown, ChevronRight, Highlighter, Loader2, Plus, RotateCcw, Trash2, Volume2, X } from "lucide-react";
 import { useLocale } from "@/components/i18n/LocaleProvider";
 import { getPrimaryChineseWords, normalizeAudioUrl, type DictionaryInflection, type DictionaryInflectionCandidate, type DictionaryInflectionRelation, type DictionaryLookupResult, type DictionaryMeaning, type DictionarySource, type DictionaryTranslation } from "@/lib/dictionary-contract";
-import { DICTIONARY_CARD_OVERFLOW_MODE_EVENT, focusExpandedDictionaryCard, MAX_DICTIONARY_CARDS, readDictionaryCardOverflowMode, removeExpandedDictionaryCard, toggleExpandedDictionaryCard, writeDictionaryCardOverflowMode, type DictionaryCardOverflowMode } from "@/lib/dictionary-card-preference";
+import { addRecentDictionaryCard, DICTIONARY_CARD_OVERFLOW_MODE_EVENT, focusExpandedDictionaryCard, MAX_DICTIONARY_CARDS, promoteRecentDictionaryCard, readDictionaryCardOverflowMode, removeExpandedDictionaryCard, toggleExpandedDictionaryCard, writeDictionaryCardOverflowMode, type DictionaryCardOverflowMode } from "@/lib/dictionary-card-preference";
 import { DICTIONARY_DISPLAY_MODE_EVENT, readDictionaryDisplayMode, type DictionaryDisplayMode } from "@/lib/dictionary-display-preference";
 import { labelButtonClasses, labelColorToLegacyColor, legacyColorToLabelColor, normalizeLabelColor } from "@/lib/highlight-labels";
 import { formatGrammarExplanation, type GrammarExplanation } from "@/lib/ai-grammar-contract";
 import { getHighlightNavigationTarget, getVocabularyNavigationTarget, ReaderNavigationTarget, shouldApplySectionNotesRequest } from "@/lib/reader-navigation";
-import { classifyVocabularySelection, normalizeNestedDictionaryWord, type VocabularyEntryType } from "@/lib/vocabulary-selection";
+import { classifyPhraseSelection, classifyVocabularySelection, normalizeNestedDictionaryWord, readPhraseTextSelection, type VocabularyEntryType } from "@/lib/vocabulary-selection";
 import type { DictionaryAiTranslation } from "@/lib/dictionary-ai";
 
 export interface SelectionRange {
@@ -252,6 +252,9 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
   const [navigationWarning, setNavigationWarning] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [savingHighlight, setSavingHighlight] = useState(false);
+  const [savingPhrase, setSavingPhrase] = useState(false);
+  const [phraseEditorOpen, setPhraseEditorOpen] = useState(false);
+  const [phraseDraft, setPhraseDraft] = useState("");
   const [deletedHighlight, setDeletedHighlight] = useState<ReaderSelection | null>(null);
   const [aiOutput, setAiOutput] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
@@ -280,8 +283,11 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
   const notesMountedRef = useRef(true);
   const vocabularyRequestIdsRef = useRef(new Map<string, string>());
   const highlightRequestIdsRef = useRef(new Map<string, string>());
+  const phraseQuoteRef = useRef<HTMLParagraphElement | null>(null);
   const activeLabels = labels.filter((item) => !item.archived);
   const displayLabels = activeLabels.length ? activeLabels : fallbackLabels;
+  // 2–6 个词可一键保存；更长选区提供编辑入口。单词高亮不显示词组控件。
+  const directPhraseSelection = selection && !selection.word ? classifyPhraseSelection(selection.quote, 6) : null;
   const navigateToRecord = (target: ReaderNavigationTarget | null) => {
     setActiveTab("lookup");
     if (!target) {
@@ -411,7 +417,7 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
 
   const addLookupCard = useCallback((request: LookupRequest, removedCardId?: string) => {
     const card: LookupCard = { ...request, id: crypto.randomUUID(), loading: true };
-    setCards((current) => [...current.filter((item) => item.id !== removedCardId), card].slice(-MAX_DICTIONARY_CARDS));
+    setCards((current) => addRecentDictionaryCard(current, card, removedCardId));
     setActiveCardIds((current) => focusExpandedDictionaryCard(
       removedCardId ? removeExpandedDictionaryCard(current, removedCardId) : current,
       card.id,
@@ -457,15 +463,16 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
   };
 
   const focusCard = useCallback((id: string) => {
+    setCards((current) => promoteRecentDictionaryCard(current, id));
     setActiveCardIds((current) => focusExpandedDictionaryCard(current, id));
-    requestAnimationFrame(() => document.getElementById(`dictionary-card-${id}`)?.scrollIntoView({ behavior: "smooth", block: "center" }));
+    requestAnimationFrame(() => document.getElementById(`dictionary-card-${id}`)?.scrollIntoView({ behavior: "smooth", block: "nearest" }));
   }, []);
 
   const requestLookup = useCallback((request: LookupRequest) => {
     const existing = cards.find((item) => item.word === request.word);
     if (existing) return focusCard(existing.id);
     if (cards.length >= MAX_DICTIONARY_CARDS) {
-      if (dictionaryCardOverflowMode === "replace-oldest") return addLookupCard(request, cards[0]?.id);
+      if (dictionaryCardOverflowMode === "replace-oldest") return addLookupCard(request, cards[cards.length - 1]?.id);
       return setPendingLookup(request);
     }
     addLookupCard(request);
@@ -483,6 +490,9 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
     setMessage(null);
     setAiRetryType(null);
     setNote(selection.highlightNote || "");
+    setPhraseEditorOpen(false);
+    setPhraseDraft("");
+    setSavingPhrase(false);
     if (!selection.word) return;
     const selected = classifyVocabularySelection(selection.quote || selection.word);
     if (selected) requestLookup({ requestId: crypto.randomUUID(), word: selected.normalized, selectedText: selected.selectedText, entryType: selected.entryType, context: selection.context, sourceType: "BOOK_TEXT", segmentId: selection.segmentId });
@@ -498,6 +508,9 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
     setAiOutput(null);
     setAiStatus(null);
     setAiRetryType(null);
+    setPhraseEditorOpen(false);
+    setPhraseDraft("");
+    setSavingPhrase(false);
   }, [contentId]);
 
   useEffect(() => {
@@ -638,6 +651,56 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
     if (response.ok) {
       vocabularyRequestIdsRef.current.delete(card.id);
       await loadSectionNotes();
+    }
+  };
+
+  const capturePhraseTextSelection = () => {
+    if (!phraseEditorOpen) return;
+    const text = readPhraseTextSelection(window.getSelection(), (node) => Boolean(phraseQuoteRef.current && node instanceof Node && phraseQuoteRef.current.contains(node)));
+    if (text) setPhraseDraft(text);
+  };
+
+  const savePhrase = async (value: string) => {
+    const selected = classifyPhraseSelection(value, 8);
+    if (!selection || !selected) {
+      setMessage(label("请保留 2～8 个以空格分隔的英文单词。", "Keep 2–8 English words separated by spaces."));
+      return;
+    }
+    const requestKey = `phrase:${contentId}:${sectionId}:${selection.segmentId || ""}:${selected.normalized}:${selected.selectedText}`;
+    const requestId = vocabularyRequestIdsRef.current.get(requestKey) || crypto.randomUUID();
+    vocabularyRequestIdsRef.current.set(requestKey, requestId);
+    setSavingPhrase(true);
+    try {
+      const response = await fetch("/api/vocabulary/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          word: selected.normalized,
+          selectedText: selected.selectedText,
+          entryType: "PHRASE",
+          context: selection.context,
+          contentId,
+          sectionId,
+          segmentId: selection.segmentId || null,
+          sourceType: "BOOK_TEXT",
+          locator: selection.ranges?.length ? JSON.stringify({ version: 1, ranges: selection.ranges }) : null,
+          requestId,
+          sessionId: currentReadingSessionId(contentId),
+        }),
+      });
+      setMessage(response.ok
+        ? label(`“${selected.normalized}”已加入生词本（词组）`, `“${selected.normalized}” was added to vocabulary as a phrase`)
+        : label("词组保存失败，请重试", "Could not save the phrase. Please retry."));
+      if (response.ok) {
+        vocabularyRequestIdsRef.current.delete(requestKey);
+        setPhraseEditorOpen(false);
+        setPhraseDraft("");
+        await loadSectionNotes();
+      }
+    } catch {
+      setMessage(label("词组保存失败，请重试", "Could not save the phrase. Please retry."));
+    } finally {
+      setSavingPhrase(false);
     }
   };
 
@@ -849,7 +912,7 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
           <div className="space-y-4">
             {(!selection.word || selection.highlightId) && <div className="rounded-xl border border-border p-3">
               <p className="text-xs font-medium text-muted-foreground">{label("当前选中内容", "Current selection")}</p>
-              <p className="mt-2 whitespace-pre-wrap text-sm leading-6">{selection.quote}</p>
+              <p ref={phraseQuoteRef} onMouseUp={capturePhraseTextSelection} onKeyUp={capturePhraseTextSelection} title={phraseEditorOpen ? label("划出词组后自动填入下方输入框", "Select a phrase here to fill the input below") : undefined} className="mt-2 select-text whitespace-pre-wrap text-sm leading-6">{selection.quote}</p>
               {selection.context !== selection.quote && <details className="mt-3 rounded-lg bg-muted/60 px-3 py-2 text-xs text-muted-foreground"><summary className="cursor-pointer select-none font-medium">{label("查看所在段落", "View source paragraph")}</summary><p className="mt-2 whitespace-pre-wrap leading-5">{selection.context}</p></details>}
               {!selection.word && <p className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-700">{label("句子或段落用于高亮和精读分析；只有单独选择一个英文单词时才打开词典。", "Use sentences and passages for highlighting or close reading. The dictionary opens only when you select one English word.")}</p>}
               <div className="mt-3 grid grid-cols-3 gap-2">
@@ -863,6 +926,14 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
                 </div>
               )}
               <div className="mt-2 grid grid-cols-2 gap-2"><button disabled={aiBusy} onClick={() => askAi("EXPLAIN")} className="rounded-lg border border-border px-3 py-2 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">{label("AI 上下文解释", "AI context")}</button><button disabled={aiBusy} onClick={() => askAi("GRAMMAR")} className="rounded-lg border border-border px-3 py-2 text-xs font-medium hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">{label("语法分析", "Grammar")}</button></div>
+              {!selection.word && directPhraseSelection && <button type="button" disabled={savingPhrase} onClick={() => void savePhrase(directPhraseSelection.selectedText)} className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2 text-xs font-medium text-primary hover:bg-primary/10 disabled:opacity-50"><Plus size={14} />{savingPhrase ? label("正在保存…", "Saving…") : label("保存为词组", "Save as phrase")}</button>}
+              {!selection.word && !directPhraseSelection && !phraseEditorOpen && <button type="button" onClick={() => { setPhraseDraft(""); setPhraseEditorOpen(true); setMessage(null); }} className="mx-auto mt-3 block text-xs text-[var(--ink-soft)] underline-offset-4 hover:text-[var(--green)] hover:underline">{label("手动保存词组", "Save a phrase manually")}<span className="ml-1">›</span></button>}
+              {!selection.word && phraseEditorOpen && <div className="mt-3 rounded-xl border border-[var(--shelf-line)] bg-white/45 p-3">
+                <label htmlFor="phrase-draft" className="text-xs font-semibold text-[var(--ink)]">{label("保存词组", "Save a phrase")}</label>
+                <p className="mt-1 text-[11px] leading-4 text-[var(--ink-soft)]">{label("在上方句子里划出词组会自动填入，也可以粘贴或手动输入。限 2～8 个英文单词，原句和位置会一并保留。", "Select a phrase above to fill this field, or paste/type it. Keep 2–8 English words; the original sentence and location are kept.")}</p>
+                <input id="phrase-draft" value={phraseDraft} onChange={(event) => setPhraseDraft(event.target.value.slice(0, 240))} onKeyDown={(event) => { if (event.key === "Enter" && phraseDraft.trim() && !savingPhrase) void savePhrase(phraseDraft); }} placeholder={label("划选、粘贴或输入词组", "Select, paste, or type a phrase")} className="mt-2 h-10 w-full rounded-lg border border-[var(--shelf-line)] bg-[#fffdf8] px-3 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-soft)]/60 focus:border-[var(--green)]" autoFocus />
+                <div className="mt-2 flex justify-end gap-2"><button type="button" disabled={savingPhrase} onClick={() => { setPhraseEditorOpen(false); setPhraseDraft(""); }} className="rounded-lg border border-border px-3 py-1.5 text-xs disabled:opacity-50">{label("取消", "Cancel")}</button><button type="button" disabled={savingPhrase || !phraseDraft.trim()} onClick={() => void savePhrase(phraseDraft)} className="rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground disabled:opacity-50">{savingPhrase ? label("正在保存…", "Saving…") : label("加入生词本", "Add to vocabulary")}</button></div>
+              </div>}
               {aiLoading && <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="animate-spin" size={15} /> {label("AI 正在准备…", "AI is preparing…")}</div>}
               {aiOutput && <div className="mt-4 whitespace-pre-wrap rounded-xl bg-blue-50 p-3 text-sm leading-6 text-blue-950">{aiOutput}</div>}
               {aiStatus && <p className="mt-2 text-center text-[11px] text-muted-foreground">{aiStatus}</p>}
@@ -897,8 +968,8 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
                         {dictionaryDisplayMode === "bilingual" && !card.loading && card.definition && (primaryTranslations.length ? <div className="mt-3 rounded-lg border border-[var(--shelf-line)] bg-white/35 p-3"><p className="text-[11px] font-semibold tracking-wide text-[var(--brass)]">{label("常用中文对应词（Wiktionary）", "Common Chinese equivalents (Wiktionary)")}</p><div className="mt-2 space-y-2">{primaryTranslations.map((translation, translationIndex) => <div key={`${translation.partOfSpeech || "meaning"}-${translation.definition || ""}-${translationIndex}`}><p className="text-sm leading-6"><span className="mr-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--brass)]">{translation.partOfSpeech || label("词义", "Meaning")}</span>{translation.words.join("、")}</p>{translation.definition && <p className="mt-0.5 text-[11px] leading-4 text-[var(--ink-soft)]">{translation.definition}</p>}</div>)}</div></div> : !card.translationUnavailable && <div className="mt-3 rounded-lg border border-[var(--shelf-line)] bg-white/25 p-3 text-xs text-[var(--ink-soft)]">{secondaryTranslations.length ? label("常见义项暂无可靠中文对应词；专业或罕见对应词已收起。", "No reliable Chinese equivalent is available for the common senses; specialized or rare equivalents are collapsed below.") : label("暂无中文对应词，英文释义仍可使用。", "No Chinese equivalent is available; the English definitions remain available.")}</div>)}
                         {dictionaryDisplayMode === "bilingual" && secondaryTranslations.length > 0 && <details className="mt-2 rounded-lg border border-[var(--shelf-line)] bg-white/20 px-3 py-2"><summary className="cursor-pointer text-xs font-medium text-[var(--ink-soft)]">{label("查看专业、古旧或罕见对应词", "Show specialized, dated, or rare equivalents")}</summary><div className="mt-2 space-y-2">{secondaryTranslations.map((translation, translationIndex) => <div key={`secondary-${translation.partOfSpeech || "meaning"}-${translation.definition || ""}-${translationIndex}`}><p className="text-sm"><span className="mr-2 text-[10px] font-semibold uppercase tracking-wide text-[var(--brass)]">{translation.partOfSpeech || label("词义", "Meaning")}</span>{translation.words.join("、")}</p>{translation.definition && <p className="mt-0.5 text-[11px] leading-4 text-[var(--ink-soft)]">{translation.definition}</p>}</div>)}</div></details>}
                         {dictionaryDisplayMode === "bilingual" && card.translationUnavailable && <p className="mt-2 text-[11px] text-amber-700">{label("中文对应词暂时无法连接，英文释义仍可使用。", "Chinese equivalents are temporarily unavailable; the English definitions remain available.")}</p>}
-                        {dictionaryDisplayMode === "bilingual" && !!card.aiTranslations?.length && <div className="mt-3 rounded-lg border border-blue-200/70 bg-blue-50/55 p-3"><p className="text-[11px] font-semibold tracking-wide text-blue-800">{label("中文释义 · DeepSeek AI 翻译", "Chinese definitions · DeepSeek AI translation")}</p><div className="mt-2 space-y-2">{card.aiTranslations.map((translation, translationIndex) => <p key={translation.definitionId} className="text-sm leading-6"><span className="mr-2 text-[10px] font-semibold text-blue-700">{translationIndex + 1}.</span>{translation.translation}</p>)}</div><p className="mt-2 text-[10px] leading-4 text-blue-700/75">{label("机器翻译仅供辅助理解，请同时参考英文原文。", "Machine translation is for reading assistance; keep the English definition as the source.")}</p></div>}
-                        {dictionaryDisplayMode === "bilingual" && !card.aiTranslations?.length && card.definition && <div className="mt-3"><button type="button" disabled={card.aiTranslationLoading} onClick={() => byokConfigured ? void loadDictionaryAiTranslation(card.id, card.lemma || card.word, card.meanings || [], true) : window.location.assign("/dashboard/settings")} className="w-full rounded-lg border border-blue-200 bg-blue-50/60 px-3 py-2 text-xs font-semibold text-blue-800 hover:bg-blue-50 disabled:cursor-wait disabled:opacity-60">{card.aiTranslationLoading ? label("正在生成中文翻译…", "Generating Chinese translation…") : byokConfigured ? label("使用我的 DeepSeek Key 生成中文翻译", "Translate with my DeepSeek key") : label("前往设置配置 DeepSeek Key", "Configure a DeepSeek key in Settings")}</button>{card.aiTranslationError && <p className="mt-2 text-xs leading-5 text-red-700">{card.aiTranslationError}</p>}</div>}
+                        {dictionaryDisplayMode === "bilingual" && !!card.aiTranslations?.length && <div className="mt-3 rounded-lg border border-blue-200/70 bg-blue-50/55 p-3"><p className="text-[11px] font-semibold tracking-wide text-blue-800">{label("中文释义 · AI 翻译", "Chinese definitions · AI translation")}</p><div className="mt-2 space-y-2">{card.aiTranslations.map((translation, translationIndex) => <p key={translation.definitionId} className="text-sm leading-6"><span className="mr-2 text-[10px] font-semibold text-blue-700">{translationIndex + 1}.</span>{translation.translation}</p>)}</div><p className="mt-2 text-[10px] leading-4 text-blue-700/75">{label("机器翻译仅供辅助理解，请同时参考英文原文。", "Machine translation is for reading assistance; keep the English definition as the source.")}</p></div>}
+                        {dictionaryDisplayMode === "bilingual" && !card.aiTranslations?.length && card.definition && <div className="mt-3"><button type="button" disabled={card.aiTranslationLoading} onClick={() => byokConfigured ? void loadDictionaryAiTranslation(card.id, card.lemma || card.word, card.meanings || [], true) : window.location.assign("/dashboard/settings")} className="w-full rounded-lg border border-blue-200 bg-blue-50/60 px-3 py-2 text-xs font-semibold text-blue-800 hover:bg-blue-50 disabled:cursor-wait disabled:opacity-60">{card.aiTranslationLoading ? label("正在生成中文翻译…", "Generating Chinese translation…") : byokConfigured ? label("使用我的 AI Key 生成中文翻译", "Translate with my AI key") : label("前往设置配置 AI Key", "Configure an AI key in Settings")}</button>{card.aiTranslationError && <p className="mt-2 text-xs leading-5 text-red-700">{card.aiTranslationError}</p>}</div>}
                         {card.loading ? <div className="mt-3 flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="animate-spin" size={15} /> {label("正在查词…", "Looking up…")}</div> : card.definition ? <div onMouseUp={() => requestNestedLookup(card)} className="mt-3 cursor-text select-text rounded-lg bg-muted/60 p-3 text-sm leading-6" title={label("选择释义中的英文单词继续查询", "Select a word in this definition to look it up")}>{card.meanings?.length ? <><div className="space-y-3">{primaryMeanings.map((meaning, meaningIndex) => <div key={`${meaning.partOfSpeech || "meaning"}-${meaningIndex}`}><p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--brass)]">{meaning.partOfSpeech || label("词义", "Meaning")}</p><ol className="mt-1 list-decimal space-y-1 pl-5">{meaning.definitions.map((definition) => <li key={definition.id}><span>{definition.definition}</span>{definition.example && <span className="mt-1 block text-xs italic text-muted-foreground">{definition.example}</span>}</li>)}</ol></div>)}</div>{additionalMeanings.length > 0 && <details className="mt-3 border-t border-[var(--shelf-line)] pt-2"><summary className="cursor-pointer text-xs font-semibold text-[var(--ink-soft)]">{label("查看完整释义", "Show all definitions")}</summary><div className="mt-3 space-y-3">{additionalMeanings.map((meaning, meaningIndex) => <div key={`additional-${meaning.partOfSpeech || "meaning"}-${meaningIndex}`}><p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--brass)]">{meaning.partOfSpeech || label("词义", "Meaning")}</p><ol className="mt-1 list-decimal space-y-1 pl-5">{meaning.definitions.map((definition) => <li key={`additional-${definition.id}`}><span>{definition.definition}</span>{definition.example && <span className="mt-1 block text-xs italic text-muted-foreground">{definition.example}</span>}</li>)}</ol></div>)}</div></details>}</> : card.definition}</div> : <div className="mt-3 rounded-lg bg-muted/60 p-3"><p className="text-sm text-muted-foreground">{card.error || (card.unavailable ? label("词典服务暂时无法连接，请稍后重试", "Dictionary services are temporarily unavailable. Try again later.") : label("免费词典没有收录这个词", "This word was not found in the free dictionaries."))}</p><button type="button" onClick={() => retryCard(card)} className="mt-2 rounded-lg border border-border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted">{label("重试", "Try again")}</button></div>}
                         {!!card.formMeanings?.length && <details className="mt-3 rounded-lg border border-[var(--shelf-line)] bg-white/25 p-3"><summary className="cursor-pointer text-xs font-semibold">{label("该词形自身含义", "Meanings of this form")}</summary><div className="mt-3 space-y-3 text-sm leading-6">{card.formMeanings.map((meaning, meaningIndex) => <div key={`form-${meaning.partOfSpeech || "meaning"}-${meaningIndex}`}><p className="text-[11px] font-semibold uppercase tracking-wide text-[var(--brass)]">{meaning.partOfSpeech || label("词义", "Meaning")}</p><ol className="mt-1 list-decimal space-y-1 pl-5">{meaning.definitions.map((definition) => <li key={`form-${definition.id}`}>{definition.definition}{definition.example && <span className="mt-1 block text-xs italic text-muted-foreground">{definition.example}</span>}</li>)}</ol></div>)}</div></details>}
                         {!!card.sources?.length && <div className="mt-2 space-y-1 text-[11px] text-muted-foreground"><span>{label("释义来源", "Sources")}:</span>{card.sources.map((item, index) => <p key={`${item.provider}-${item.version || ""}-${index}`}>{item.url ? <a href={item.url} target="_blank" rel="noreferrer" className="underline decoration-[var(--brass)] underline-offset-2 hover:text-[var(--ink)]">{item.provider}{item.version ? ` ${item.version}` : ""}</a> : `${item.provider}${item.version ? ` ${item.version}` : ""}`}{item.licenseName && <> · {item.licenseUrl ? <a href={item.licenseUrl} target="_blank" rel="noreferrer" className="underline underline-offset-2">{item.licenseName}</a> : item.licenseName}</>}</p>)}</div>}
@@ -916,7 +987,7 @@ export default function ReaderInspector({ selection, contentId, sectionId, secti
               })}
             </div>
 
-            {pendingLookup && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p>{label(`最多保留 ${MAX_DICTIONARY_CARDS} 张词卡。继续查询“${pendingLookup.word}”将移除最早的“${cards[0]?.word}”；确认后，以后达到上限将自动移除最早词卡。`, `You can keep ${MAX_DICTIONARY_CARDS} dictionary cards. Looking up “${pendingLookup.word}” will remove the oldest card, “${cards[0]?.word}”. After you confirm, the oldest card will be removed automatically whenever the limit is reached.`)}</p><div className="mt-3 flex flex-wrap justify-end gap-2"><button onClick={() => setPendingLookup(null)} className="rounded-lg border border-amber-300 px-3 py-1.5 text-xs">{label("取消", "Cancel")}</button><button onClick={() => { writeDictionaryCardOverflowMode("replace-oldest"); setDictionaryCardOverflowMode("replace-oldest"); addLookupCard(pendingLookup, cards.length >= MAX_DICTIONARY_CARDS ? cards[0]?.id : undefined); setPendingLookup(null); }} className="rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-medium text-white">{label("确认并继续", "Confirm and continue")}</button></div></div>}
+            {pendingLookup && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900"><p>{label(`最多保留 ${MAX_DICTIONARY_CARDS} 张词卡。继续查询“${pendingLookup.word}”将移除最早的“${cards[cards.length - 1]?.word}”；确认后，以后达到上限将自动移除最早词卡。`, `You can keep ${MAX_DICTIONARY_CARDS} dictionary cards. Looking up “${pendingLookup.word}” will remove the oldest card, “${cards[cards.length - 1]?.word}”. After you confirm, the oldest card will be removed automatically whenever the limit is reached.`)}</p><div className="mt-3 flex flex-wrap justify-end gap-2"><button onClick={() => setPendingLookup(null)} className="rounded-lg border border-amber-300 px-3 py-1.5 text-xs">{label("取消", "Cancel")}</button><button onClick={() => { writeDictionaryCardOverflowMode("replace-oldest"); setDictionaryCardOverflowMode("replace-oldest"); addLookupCard(pendingLookup, cards.length >= MAX_DICTIONARY_CARDS ? cards[cards.length - 1]?.id : undefined); setPendingLookup(null); }} className="rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-medium text-white">{label("确认并继续", "Confirm and continue")}</button></div></div>}
           </div>
         )}
 
