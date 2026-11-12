@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { getUserId } from "@/lib/auth";
 import { AiProviderError, callAiProvider, resolveAiProviderConfig } from "@/lib/ai-provider";
+import { getAiProviderLabel } from "@/lib/ai-providers";
 import { checkExistingAiAttempt, completeAiAttempt, getAiQuotaStatus, releaseAiAttempt, reserveAiAttempt, startAiProviderDispatch } from "@/lib/ai-quota";
 import { buildReservationInputHash, getQuotaDay, isAiQuotaEnabled, isValidRequestId } from "@/lib/ai-quota-contract";
 import { AiQuotaErrorCode, getAiQuotaFailureFromError, getAiQuotaFailureResponse } from "@/lib/ai-quota-errors";
@@ -20,7 +21,7 @@ function failureResponse(kind: string, remaining = 0) {
   if (kind === "conflict") return NextResponse.json({ error: "Request ID conflict", code: "REQUEST_CONFLICT" }, { status: 409 });
   if (kind === "in-flight" || kind === "test-in-flight") return NextResponse.json({ error: "A connection test is already in progress.", code: "IN_FLIGHT", remaining }, { status: 409 });
   if (kind === "attempt-limit") return NextResponse.json({ error: "Too many recent connection tests. Try again later.", code: "ATTEMPT_LIMIT", remaining }, { status: 429 });
-  if (kind === "timeout") return NextResponse.json({ error: "DeepSeek 连接超时，请稍后重试并检查网络。", code: "TIMEOUT", remaining }, { status: 502 });
+  if (kind === "timeout") return NextResponse.json({ error: "AI 服务连接超时，请稍后重试并检查网络。", code: "TIMEOUT", remaining }, { status: 502 });
   if (kind === "released" || kind === "expired") return NextResponse.json({ error: "This test attempt has ended. Start a new test to retry.", code: kind === "expired" ? "EXPIRED" : "ATTEMPT_FAILED", remaining }, { status: 409 });
   if (kind === "invalid-snapshot") return NextResponse.json({ error: "The saved test result is unavailable.", code: "RESULT_UNAVAILABLE" }, { status: 500 });
   return null;
@@ -98,23 +99,24 @@ export async function POST(req: NextRequest) {
     if (quotaFailure) return NextResponse.json(quotaFailure.body, { status: quotaFailure.status });
     if (!(error instanceof AiProviderError)) return quotaFailureResponse("QUOTA_STORAGE_UNAVAILABLE");
 
-    console.error("AI connection test provider failed:", error.code);
+    console.error("AI connection test provider failed:", error.code, error.status || "", error.detail || "");
     const code = error.code;
     try {
       await releaseAiAttempt(binding, code);
     } catch (releaseError) {
       return quotaFailureFromError(releaseError);
     }
+    const label = getAiProviderLabel(config.provider);
     const messages: Record<string, string> = {
-      INVALID_KEY: "DeepSeek Key 无效或没有访问权限，请检查服务器配置后重试。",
-      INVALID_MODEL: "模型名或 API 地址不正确，请检查服务器配置。",
-      BALANCE_OR_RATE_LIMIT: "DeepSeek 账户余额不足、请求过快或服务额度受限。",
-      TIMEOUT: "DeepSeek 连接超时，请稍后重试并检查网络。",
-      NETWORK: "服务器无法连接 DeepSeek，请检查网络和 API 地址。",
-      EMPTY_RESPONSE: "DeepSeek 已连接，但没有返回可用内容。",
-      TRUNCATED: "DeepSeek 响应不完整，请稍后重试。",
-      INVALID_FORMAT: "DeepSeek 返回格式无效，请稍后重试。",
-      PROVIDER_ERROR: "DeepSeek 服务暂时返回错误，请稍后重试。",
+      INVALID_KEY: `${label} Key 无效或没有访问权限，请检查后重试。`,
+      INVALID_MODEL: `${label} 模型名或 API 地址不正确，请检查配置。`,
+      BALANCE_OR_RATE_LIMIT: `${label} 账户余额不足、请求过快或服务额度受限。`,
+      TIMEOUT: `${label} 连接超时，请稍后重试并检查网络。`,
+      NETWORK: `服务器无法连接 ${label}，请检查网络和 API 地址。`,
+      EMPTY_RESPONSE: `${label} 已连接，但没有返回可用内容。`,
+      TRUNCATED: `${label} 响应不完整，请稍后重试。`,
+      INVALID_FORMAT: `${label} 返回格式无效，请稍后重试。`,
+      PROVIDER_ERROR: `${label} 服务暂时返回错误，请稍后重试。`,
     };
     let remaining = 0;
     try {
@@ -122,6 +124,6 @@ export async function POST(req: NextRequest) {
     } catch (statusError) {
       return quotaFailureFromError(statusError);
     }
-    return NextResponse.json({ error: messages[code] || messages.PROVIDER_ERROR, code, provider: config.provider, model: config.model, remaining }, { status: 502 });
+    return NextResponse.json({ error: messages[code] || messages.PROVIDER_ERROR, code, provider: config.provider, model: config.model, detail: error.detail || null, remaining }, { status: 502 });
   }
 }

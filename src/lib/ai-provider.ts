@@ -1,6 +1,7 @@
 import { AI_PROVIDER_TIMEOUT_MS, isAiProviderTimeoutFailure } from "@/lib/ai-quota-contract";
 import { prisma } from "@/lib/db";
-import { decryptAiApiKey } from "@/lib/ai-credential";
+import { decryptAiCredential } from "@/lib/ai-credential";
+import { DEFAULT_AI_MODEL, describeAiNetworkCause, getAiProviderPreset, parseAiModelList, resolveResponseTokenBudget, resolveTruncatedRetryBudget, supportsThinkingToggle } from "@/lib/ai-providers";
 
 export interface AiRequest {
   requestType: "EXPLAIN" | "CONTEXT" | "GRAMMAR" | "QUIZ" | "QUIZ_JSON" | "PLAN" | "TEST" | "DICTIONARY_TRANSLATION";
@@ -37,9 +38,30 @@ export type AiUsageMode = "byok" | "site_quota" | "unconfigured";
 export type AiProviderErrorCode = "INVALID_KEY" | "INVALID_MODEL" | "BALANCE_OR_RATE_LIMIT" | "TIMEOUT" | "NETWORK" | "EMPTY_RESPONSE" | "TRUNCATED" | "INVALID_FORMAT" | "PROVIDER_ERROR";
 
 export class AiProviderError extends Error {
-  constructor(public readonly code: AiProviderErrorCode, public readonly status?: number) {
+  constructor(public readonly code: AiProviderErrorCode, public readonly status?: number, public readonly detail?: string) {
     super(code);
     this.name = "AiProviderError";
+  }
+}
+
+/**
+ * 读取服务商返回的错误内容，用于定位"模型未开通""接入点不存在"这类具体问题。
+ * 只取错误消息与代码，不回传请求头或 Key，并限制长度。
+ */
+async function readProviderErrorDetail(response: Response) {
+  try {
+    const text = (await response.text()).slice(0, 800);
+    if (!text) return "";
+    try {
+      const data = JSON.parse(text) as { error?: { message?: unknown; code?: unknown }; message?: unknown; code?: unknown };
+      const message = typeof data.error?.message === "string" ? data.error.message : typeof data.message === "string" ? data.message : "";
+      const code = typeof data.error?.code === "string" ? data.error.code : typeof data.code === "string" ? data.code : "";
+      return ([code, message].filter(Boolean).join(": ") || text).slice(0, 200);
+    } catch {
+      return text.slice(0, 200);
+    }
+  } catch {
+    return "";
   }
 }
 
@@ -113,7 +135,19 @@ export async function resolveAiProviderConfig(userId: string): Promise<{ config:
   const credential = await prisma.userAiCredential.findUnique({ where: { userId } });
   if (credential) {
     try {
-      return { config: { ...siteConfig, configured: true, apiKey: decryptAiApiKey(credential), provider: "deepseek" }, usageMode: "byok" };
+      const credentialConfig = decryptAiCredential(credential);
+      return {
+        config: {
+          ...siteConfig,
+          configured: true,
+          apiKey: credentialConfig.apiKey,
+          provider: credentialConfig.provider,
+          // v1 记录只保存了 DeepSeek Key：地址固定回 DeepSeek 官方，避免旧 Key 被发到其他服务商的域名。
+          baseUrl: credentialConfig.baseUrl || getAiProviderPreset("deepseek").baseUrl,
+          model: credentialConfig.model || (siteConfig.provider === "deepseek" ? siteConfig.model : DEFAULT_AI_MODEL),
+        },
+        usageMode: "byok",
+      };
     } catch (error) {
       console.error("Stored AI credential is unavailable:", error instanceof Error ? error.name : "unknown");
     }
@@ -129,49 +163,63 @@ export async function callAiProvider(
   if (!config.configured || !config.apiKey || !config.model) return null;
   const contextLimit = request.requestType === "CONTEXT" ? 1_500 : request.requestType === "EXPLAIN" || request.requestType === "GRAMMAR" ? 2_500 : 8_000;
   const context = request.context?.slice(0, contextLimit);
-  const maxTokens = request.requestType === "TEST" ? 32 : request.requestType === "EXPLAIN" || request.requestType === "CONTEXT" ? 400 : request.requestType === "GRAMMAR" || request.requestType === "DICTIONARY_TRANSLATION" ? 600 : 1_200;
   const requestBody: Record<string, unknown> = {
     model: config.model,
     temperature: request.requestType === "EXPLAIN" ? 0.25 : request.requestType === "CONTEXT" ? 0.1 : 0.3,
-    max_tokens: maxTokens,
     messages: [
       { role: "system", content: systemPrompt(request) },
       { role: "user", content: `${request.requestType === "EXPLAIN" ? "完整选区（必须整体解释，不得缩小为其中单词）" : "目标内容"}：${request.text}\n\n上下文：${context || "无"}${request.requestType === "CONTEXT" ? `\n\n词典候选释义：\n${candidatePrompt(request.candidates)}` : ""}` },
     ],
   };
-  if (usesNonThinkingMode(request.requestType)) requestBody.thinking = { type: "disabled" };
+  if (usesNonThinkingMode(request.requestType) && supportsThinkingToggle(config.provider)) requestBody.thinking = { type: "disabled" };
   if (isStructuredTask(request.requestType)) requestBody.response_format = { type: "json_object" };
 
-  const timeoutMs = deadlineOrTimeout instanceof Date ? deadlineOrTimeout.getTime() - Date.now() : deadlineOrTimeout;
-  if (timeoutMs <= 0) throw new AiProviderError("TIMEOUT");
-  const timeoutSignal = AbortSignal.timeout(Math.min(timeoutMs, AI_PROVIDER_TIMEOUT_MS));
-  let response: Response;
-  try {
-    response = await fetch(`${config.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-      signal: timeoutSignal,
-    });
-  } catch (error) {
-    if (isAiProviderTimeoutFailure(error, timeoutSignal.aborted)) throw new AiProviderError("TIMEOUT");
-    throw new AiProviderError("NETWORK");
-  }
-  if (timeoutSignal.aborted) throw new AiProviderError("TIMEOUT");
-  if (!response.ok) {
-    if (response.status === 401 || response.status === 403) throw new AiProviderError("INVALID_KEY", response.status);
-    if (response.status === 400 || response.status === 404) throw new AiProviderError("INVALID_MODEL", response.status);
-    if (response.status === 402 || response.status === 429) throw new AiProviderError("BALANCE_OR_RATE_LIMIT", response.status);
-    throw new AiProviderError("PROVIDER_ERROR", response.status);
-  }
+  let maxTokens = resolveResponseTokenBudget(request.requestType);
+  let retriedTruncated = false;
   let data: { model?: string; choices?: Array<{ finish_reason?: string; message?: { content?: string } }> };
-  try {
-    data = await response.json() as typeof data;
-  } catch (error) {
-    if (isAiProviderTimeoutFailure(error, timeoutSignal.aborted)) throw new AiProviderError("TIMEOUT");
-    throw new AiProviderError("PROVIDER_ERROR");
+  for (;;) {
+    const timeoutMs = deadlineOrTimeout instanceof Date ? deadlineOrTimeout.getTime() - Date.now() : deadlineOrTimeout;
+    if (timeoutMs <= 0) throw new AiProviderError("TIMEOUT");
+    const timeoutSignal = AbortSignal.timeout(Math.min(timeoutMs, AI_PROVIDER_TIMEOUT_MS));
+    let response: Response;
+    try {
+      response = await fetch(`${config.baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${config.apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ ...requestBody, max_tokens: maxTokens }),
+        signal: timeoutSignal,
+      });
+    } catch (error) {
+      if (isAiProviderTimeoutFailure(error, timeoutSignal.aborted)) throw new AiProviderError("TIMEOUT");
+      throw new AiProviderError("NETWORK", undefined, describeAiNetworkCause(error));
+    }
+    if (timeoutSignal.aborted) throw new AiProviderError("TIMEOUT");
+    if (!response.ok) {
+      const detail = await readProviderErrorDetail(response);
+      if (response.status === 401 || response.status === 403) throw new AiProviderError("INVALID_KEY", response.status, detail);
+      if (response.status === 400 || response.status === 404) throw new AiProviderError("INVALID_MODEL", response.status, detail);
+      if (response.status === 402 || response.status === 429) throw new AiProviderError("BALANCE_OR_RATE_LIMIT", response.status, detail);
+      throw new AiProviderError("PROVIDER_ERROR", response.status, detail);
+    }
+    try {
+      data = await response.json() as typeof data;
+    } catch (error) {
+      if (isAiProviderTimeoutFailure(error, timeoutSignal.aborted)) throw new AiProviderError("TIMEOUT");
+      throw new AiProviderError("PROVIDER_ERROR");
+    }
+    if (timeoutSignal.aborted) throw new AiProviderError("TIMEOUT");
+    // 推理模型的思考 token 也占输出预算。首次 length 时自动放大一次预算，
+    // 只在第二次仍被截断时才向用户报错；Date 形式的总 deadline 在两次请求间共享。
+    if (data.choices?.[0]?.finish_reason === "length" && !retriedTruncated) {
+      const retryBudget = resolveTruncatedRetryBudget(maxTokens);
+      if (retryBudget > maxTokens) {
+        maxTokens = retryBudget;
+        retriedTruncated = true;
+        continue;
+      }
+    }
+    break;
   }
-  if (timeoutSignal.aborted) throw new AiProviderError("TIMEOUT");
   const choice = data.choices?.[0];
   if (!choice) throw new AiProviderError("EMPTY_RESPONSE");
   if (choice.finish_reason === "length") throw new AiProviderError("TRUNCATED");
@@ -188,8 +236,37 @@ export async function callAiProvider(
   return { output, provider: config.provider, model: data.model || config.model };
 }
 
-export function localAiFallback(request: AiRequest): AiProviderResult {
-  if (request.requestType === "QUIZ" || request.requestType === "QUIZ_JSON") {
+/**
+ * 尝试用用户的 Key 读取该账号实际可用的模型列表（OpenAI 兼容 GET /models）。
+ * 不支持该接口的服务商返回 supported: false，由界面回退为手动填写，不视为错误。
+ */
+export async function listAiProviderModels(config: AiProviderConfig, timeoutMs = AI_PROVIDER_TIMEOUT_MS): Promise<{ supported: boolean; models: string[] }> {
+  if (!config.configured || !config.apiKey) throw new AiProviderError("PROVIDER_ERROR");
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  let response: Response;
+  try {
+    response = await fetch(`${config.baseUrl}/models`, { headers: { Authorization: `Bearer ${config.apiKey}` }, signal: timeoutSignal });
+  } catch (error) {
+    if (isAiProviderTimeoutFailure(error, timeoutSignal.aborted)) throw new AiProviderError("TIMEOUT");
+    throw new AiProviderError("NETWORK", undefined, describeAiNetworkCause(error));
+  }
+  if (response.status === 404 || response.status === 405 || response.status === 501) {
+    await response.text().catch(() => "");
+    return { supported: false, models: [] };
+  }
+  if (!response.ok) {
+    const detail = await readProviderErrorDetail(response);
+    // 部分网关对不存在的路径返回 400 而不是 404，同样按"不支持列模型"处理。
+    if (response.status === 400 && /not\s*found|unknown|unsupported/i.test(detail)) return { supported: false, models: [] };
+    if (response.status === 401 || response.status === 403) throw new AiProviderError("INVALID_KEY", response.status, detail);
+    throw new AiProviderError("PROVIDER_ERROR", response.status, detail);
+  }
+  const data = await response.json().catch(() => null);
+  const models = parseAiModelList(data);
+  return models.length ? { supported: true, models } : { supported: false, models: [] };
+}
+
+export function localAiFallback(request: AiRequest): AiProviderResult {  if (request.requestType === "QUIZ" || request.requestType === "QUIZ_JSON") {
     const excerpt = request.text.replace(/\s+/g, " ").slice(0, 500);
     return {
       provider: "local",

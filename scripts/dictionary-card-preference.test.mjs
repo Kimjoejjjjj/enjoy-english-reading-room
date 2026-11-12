@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
+  addRecentDictionaryCard,
   DEFAULT_DICTIONARY_CARD_OVERFLOW_MODE,
   DICTIONARY_CARD_OVERFLOW_MODE_EVENT,
   DICTIONARY_CARD_OVERFLOW_MODE_KEY,
@@ -9,6 +10,7 @@ import {
   MAX_DICTIONARY_CARDS,
   MAX_EXPANDED_DICTIONARY_CARDS,
   normalizeDictionaryCardOverflowMode,
+  promoteRecentDictionaryCard,
   readDictionaryCardOverflowMode,
   removeExpandedDictionaryCard,
   toggleExpandedDictionaryCard,
@@ -68,6 +70,24 @@ test("expanded card queue keeps the five most recently expanded cards", () => {
   expanded = toggleExpandedDictionaryCard(expanded, "four");
   assert.deepEqual(expanded, ["two", "five", "six", "three"]);
   assert.deepEqual(removeExpandedDictionaryCard(expanded, "six"), ["two", "five", "three"]);
+});
+
+test("dictionary cards use most-recent order and remove the oldest tail card", () => {
+  let cards = [{ id: "apple" }, { id: "bridge" }];
+  cards = addRecentDictionaryCard(cards, { id: "serene" });
+  assert.deepEqual(cards.map((card) => card.id), ["serene", "apple", "bridge"]);
+
+  cards = promoteRecentDictionaryCard(cards, "bridge");
+  assert.deepEqual(cards.map((card) => card.id), ["bridge", "serene", "apple"]);
+  assert.equal(promoteRecentDictionaryCard(cards, "bridge"), cards, "the current top card does not need a new array");
+  assert.equal(promoteRecentDictionaryCard(cards, "missing"), cards);
+
+  const full = Array.from({ length: MAX_DICTIONARY_CARDS }, (_, index) => ({ id: `card-${index}` }));
+  const replaced = addRecentDictionaryCard(full, { id: "latest" }, full.at(-1)?.id);
+  assert.equal(replaced.length, MAX_DICTIONARY_CARDS);
+  assert.equal(replaced[0].id, "latest");
+  assert.equal(replaced.at(-1).id, "card-13");
+  assert.equal(replaced.some((card) => card.id === "card-14"), false, "the least recently used tail card is removed");
 });
 
 test("reader and settings expose the 15-card replacement controls", () => {

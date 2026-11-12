@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getUserId } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import { AiProviderError, callAiProvider, resolveAiProviderConfig } from "@/lib/ai-provider";
+import { getAiProviderLabel } from "@/lib/ai-providers";
 import { checkExistingAiAttempt, completeAiAttempt, releaseAiAttempt, reserveAiAttempt, startAiProviderDispatch } from "@/lib/ai-quota";
 import { buildReservationInputHash, getQuotaDay, isValidRequestId } from "@/lib/ai-quota-contract";
 import { DICTIONARY_TRANSLATION_PROMPT_VERSION, dictionaryTranslationCacheHash, dictionaryTranslationInput, parseDictionaryAiTranslations, type DictionaryAiDefinition } from "@/lib/dictionary-ai";
@@ -25,19 +26,20 @@ function normalizeDefinitions(value: unknown): DictionaryAiDefinition[] {
   return definitions;
 }
 
-function failure(error: AiProviderError) {
+function failure(error: AiProviderError, provider: string) {
+  const label = getAiProviderLabel(provider);
   const messages: Record<AiProviderError["code"], string> = {
-    INVALID_KEY: "DeepSeek Key 已失效，请前往设置更换。",
-    INVALID_MODEL: "当前 DeepSeek 模型不可用。",
-    BALANCE_OR_RATE_LIMIT: "DeepSeek 余额不足或请求频率受限。",
+    INVALID_KEY: `${label} Key 已失效，请前往设置更换。`,
+    INVALID_MODEL: `当前 ${label} 模型或 API 地址不可用。`,
+    BALANCE_OR_RATE_LIMIT: `${label} 余额不足或请求频率受限。`,
     TIMEOUT: "中文翻译请求超时，请重试。",
-    NETWORK: "暂时无法连接 DeepSeek。",
-    EMPTY_RESPONSE: "DeepSeek 没有返回可用翻译。",
-    TRUNCATED: "DeepSeek 返回内容不完整，请重试。",
-    INVALID_FORMAT: "DeepSeek 返回的翻译格式无效，请重试。",
-    PROVIDER_ERROR: "DeepSeek 翻译暂时不可用。",
+    NETWORK: `暂时无法连接 ${label}。`,
+    EMPTY_RESPONSE: `${label} 没有返回可用翻译。`,
+    TRUNCATED: `${label} 返回内容不完整，请重试。`,
+    INVALID_FORMAT: `${label} 返回的翻译格式无效，请重试。`,
+    PROVIDER_ERROR: `${label} 翻译暂时不可用。`,
   };
-  return NextResponse.json({ error: messages[error.code], code: error.code, retryable: ["TIMEOUT", "NETWORK", "EMPTY_RESPONSE", "TRUNCATED", "INVALID_FORMAT", "PROVIDER_ERROR"].includes(error.code) }, { status: error.code === "TIMEOUT" ? 504 : 502 });
+  return NextResponse.json({ error: messages[error.code], code: error.code, detail: error.detail || null, retryable: ["TIMEOUT", "NETWORK", "EMPTY_RESPONSE", "TRUNCATED", "INVALID_FORMAT", "PROVIDER_ERROR"].includes(error.code) }, { status: error.code === "TIMEOUT" ? 504 : 502 });
 }
 
 export async function POST(req: NextRequest) {
@@ -51,7 +53,7 @@ export async function POST(req: NextRequest) {
   if (!lemma || !definitions.length || !isValidRequestId(requestId)) return NextResponse.json({ error: "Invalid dictionary translation request" }, { status: 400 });
 
   const { config, usageMode } = await resolveAiProviderConfig(userId);
-  const inputHash = dictionaryTranslationCacheHash(lemma, definitions, config.model);
+  const inputHash = dictionaryTranslationCacheHash(lemma, definitions, config.model, { provider: config.provider, baseUrl: config.baseUrl });
   const cached = await prisma.aiResultCache.findUnique({ where: { userId_inputHash_requestType: { userId, inputHash, requestType: "DICTIONARY_TRANSLATION" } } });
   const cachedTranslations = cached ? parseDictionaryAiTranslations(cached.output, definitions) : null;
   if (cached && cachedTranslations) {
@@ -59,7 +61,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ translations: cachedTranslations, provider: cached.provider, model: cached.model, cached: true, usageMode: usageMode === "byok" ? "byok" : "unconfigured" });
   }
   if (cacheOnly) return NextResponse.json({ translations: [], cached: false, notFound: true }, { status: 404 });
-  if (usageMode !== "byok") return NextResponse.json({ error: "请先在设置中配置自己的 DeepSeek API Key。", code: "BYOK_REQUIRED" }, { status: 409 });
+  if (usageMode !== "byok") return NextResponse.json({ error: "请先在设置中配置自己的 AI API Key。", code: "BYOK_REQUIRED" }, { status: 409 });
 
   const binding = {
     userId,
@@ -99,6 +101,6 @@ export async function POST(req: NextRequest) {
   } catch (error) {
     const reason = error instanceof AiProviderError ? error.code : "PROVIDER_ERROR";
     await releaseAiAttempt(binding, reason).catch(() => undefined);
-    return failure(error instanceof AiProviderError ? error : new AiProviderError("PROVIDER_ERROR"));
+    return failure(error instanceof AiProviderError ? error : new AiProviderError("PROVIDER_ERROR"), config.provider);
   }
 }

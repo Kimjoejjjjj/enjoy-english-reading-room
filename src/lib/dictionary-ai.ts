@@ -31,8 +31,8 @@ export function dictionaryTranslationInput(lemma: string, definitions: Dictionar
   return JSON.stringify({ lemma: lemma.toLowerCase(), definitions });
 }
 
-export function dictionaryTranslationCacheHash(lemma: string, definitions: DictionaryAiDefinition[], model: string) {
-  return createHash("sha256").update(JSON.stringify({ provider: "deepseek", model, promptVersion: DICTIONARY_TRANSLATION_PROMPT_VERSION, lemma: lemma.toLowerCase(), definitions })).digest("hex");
+export function dictionaryTranslationCacheHash(lemma: string, definitions: DictionaryAiDefinition[], model: string, connection?: { provider?: string; baseUrl?: string }) {
+  return createHash("sha256").update(JSON.stringify({ provider: connection?.provider || "deepseek", baseUrl: connection?.baseUrl || "", model, promptVersion: DICTIONARY_TRANSLATION_PROMPT_VERSION, lemma: lemma.toLowerCase(), definitions })).digest("hex");
 }
 
 export function parseDictionaryAiTranslations(value: string, definitions: DictionaryAiDefinition[]): DictionaryAiTranslation[] | null {
